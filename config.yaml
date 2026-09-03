@@ -1,15 +1,29 @@
 # Конфигурация почтового агента
-# Принцип из PLAN.md: адрес модели живёт здесь, а не в коде.
-# Переезд на сервер = меняем base_url, код не трогаем.
+# Принцип из PLAN.md: адреса и настройки живут здесь, а не в коде.
+# Секреты (логины, пароли приложений, токен Telegram) — только в .env.
 
 llm:
-  base_url: "http://localhost:11434/v1"  # OpenAI-совместимый API Ollama
-  model: "qwen3:14b"                     # кандидат этапа 0; финализируем по тесту
+  base_url: "http://localhost:11434/v1"  # Ollama; из Docker — http://host.docker.internal:11434/v1
+  model: "qwen3:14b"
   api_key: "ollama"                      # локально не проверяется, нужен клиенту
 
 mail:
-  batch_limit: 25          # не читаем больше N писем за раз (AppleScript медленный на больших выборках)
-  default_account: ""      # ящик по умолчанию для Telegram-бота (например "Google"); пусто — бот уточнит в диалоге
+  batch_limit: 25          # не читаем больше N писем за раз
+  default_account: ""      # ящик по умолчанию (имя из accounts, например "Google"); пусто — агент уточнит
+  # Ящики по IMAP. Имя ящика — как его называть в диалоге; host — IMAP-сервер;
+  # env — префикс переменных в .env: <env>_USER (логин) и <env>_PASS (пароль приложения).
+  # port по умолчанию 993 (IMAP over TLS). Папки корзины и черновиков определяются
+  # автоматически; при необходимости можно задать вручную полями trash и drafts.
+  accounts:
+    Google:
+      host: imap.gmail.com
+      env: IMAP_GOOGLE
+    iCloud:
+      host: imap.mail.me.com
+      env: IMAP_ICLOUD
+    Yandex:
+      host: imap.yandex.ru
+      env: IMAP_YANDEX
 
 telegram:
   enabled: false    # используется ботом этапа 4
@@ -17,7 +31,7 @@ telegram:
 proactive:
   enabled: true              # фоновая проверка почты (этап 5)
   check_interval_min: 15     # как часто проверять
-  quiet_hours: "23:00-07:00" # тихие часы (локальное время мака); важное копится до утра
+  quiet_hours: "23:00-07:00" # тихие часы (локальное время); важное копится до утра
   digest_enabled: true       # утренний дайджест
   digest_time: "08:00"       # когда присылать дайджест
   cleanup_enabled: true      # авто-уборка по правилам «сам» (после дайджеста)
