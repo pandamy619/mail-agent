@@ -1,63 +1,68 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Этап 1 — тест чтения почты. НИЧЕГО в почте не изменяет.
+Проверка подключения к ящикам по IMAP. Ничего не изменяет — только читает.
 
-Показывает последние 10 писем со всех ящиков и текст самого свежего
-непрочитанного. При первом запуске macOS спросит разрешение
-«Terminal хочет управлять Mail» — нажмите «Разрешить».
+Для каждого ящика из config.yaml с заполненными данными в .env:
+  подключение и время входа, число писем во «Входящих», найденные папки
+  корзины и черновиков, поддержка MOVE, последние 5 писем (● непрочитанные)
+  и первые строки самого свежего письма.
 
-Запуск из папки проекта:
-    python3 scripts/test_mail.py
+Запуск:
+    python3 scripts/test_mail.py            # все ящики
+    python3 scripts/test_mail.py Google     # один ящик
 """
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from agent import config  # noqa: E402
 from agent.tools import mail  # noqa: E402
 
-print("— Этап 1: проверка чтения Почты (только чтение) —\n")
-print("⏳ Читаю последние письма из единого «Входящие» всех ящиков…")
-print("   Если появится диалог про управление Mail — нажмите «Разрешить».\n")
 
-try:
-    recent = mail.list_recent(limit=10)
-except mail.MailNotAuthorized:
-    print("❌ macOS не разрешает Терминалу управлять Почтой.")
-    print("   Откройте: Настройки → Конфиденциальность и безопасность → Автоматизация,")
-    print("   найдите Terminal и включите переключатель Mail. Затем запустите тест снова.")
-    sys.exit(1)
-except mail.MailError as e:
-    print(f"❌ Ошибка при обращении к Почте:\n   {e}")
-    print("\nПришлите этот вывод Клоду — разберёмся.")
-    sys.exit(1)
-
-if not recent:
-    print("Во «Входящих» не нашлось ни одного письма — странно.")
-    print("Пришлите этот вывод Клоду.")
-    sys.exit(0)
-
-print(f"✅ Последние {len(recent)} писем (● — непрочитанное):\n")
-for m in recent:
-    mark = "●" if m["unread"] else "○"
-    print(f" {mark} {m['age_str']:>12} | {m['account'][:14]:<14} | "
-          f"{m['sender'][:34]:<34} | {m['subject'][:48]}")
-
-unread = [m for m in recent if m["unread"]]
-if unread:
-    first = unread[0]
-    print(f"\n⏳ Текст самого свежего непрочитанного: «{first['subject'][:60]}»")
+def check(acc: str) -> bool:
+    print(f"\n── {acc} ──")
     try:
-        body = mail.get_body(first["idx"], max_chars=400)
-        print("─" * 64)
-        print((body.strip() or "(пустое тело письма)")[:400])
-        print("─" * 64)
+        info = mail.check_connection(acc)
+    except (mail.MailError, config.ConfigError) as e:
+        print(f"❌ {e}")
+        return False
+    print(f"✅ подключение за {info['connect_sec']} с, во «Входящих» {info['inbox']} писем")
+    print(f"   корзина: {info['trash']}   черновики: {info['drafts']}")
+    print(f"   MOVE: {'да' if info['move'] else 'нет (COPY+EXPUNGE)'}, "
+          f"UIDPLUS: {'да' if info['uidplus'] else 'нет'}")
+    rows = mail.list_recent(limit=5, account=acc)
+    if not rows:
+        print("   писем нет")
+        return True
+    for r in rows:
+        mark = "●" if r["unread"] else " "
+        print(f"   {mark} [{r['id']}] {r['age_str']:>12}  {r['sender'][:38]:38}  {r['subject'][:50]}")
+    try:
+        body = mail.get_body_by_id(rows[0]["id"], account=acc, max_chars=300)
+        print("   ── текст самого свежего письма ──")
+        for line in (body or "(пусто)").splitlines()[:6]:
+            print(f"   | {line}")
     except mail.MailError as e:
-        print(f"⚠️  Список прочитался, а тело письма — нет: {e}")
-        print("Пришлите вывод Клоду.")
-else:
-    print("\nСреди последних 10 писем непрочитанных нет — тело письма")
-    print("прочитаем на этапе 2 по команде агенту.")
+        print(f"   ⚠ текст не прочитался: {e}")
+    return True
 
-print("\n🎉 ЭТАП 1 ПРОЙДЕН: агент умеет читать почту со всех ящиков.")
-print("Пришлите вывод Клоду (содержимое писем можно замазать) — обсудим этап 2.")
+
+def main():
+    print("— Проверка почты по IMAP (только чтение) —")
+    try:
+        accounts = ([mail.resolve_account(sys.argv[1])] if len(sys.argv) > 1
+                    else mail.list_accounts())
+    except (mail.MailError, config.ConfigError) as e:
+        print(f"❌ {e}")
+        sys.exit(1)
+    if not accounts:
+        print("❌ Ни одного ящика с заполненными данными в .env (см. .env.example).")
+        sys.exit(1)
+    ok = all([check(a) for a in accounts])
+    print("\n🎉 Почта доступна." if ok else "\n⚠ Не все ящики доступны — см. выше.")
+    sys.exit(0 if ok else 1)
+
+
+if __name__ == "__main__":
+    main()

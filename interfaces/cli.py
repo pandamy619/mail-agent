@@ -24,7 +24,8 @@ DIM = "\033[2m"
 RED = "\033[31m"
 RESET = "\033[0m"
 
-DANGEROUS = {"trash_messages", "move_messages", "empty_trash", "confirm_action"}
+DANGEROUS = {"trash_messages", "move_messages", "trash_by_filter",
+             "move_by_filter", "empty_trash", "confirm_action"}
 
 
 plain = core.plain  # очистка markdown живёт в ядре, общая с Telegram
@@ -40,20 +41,16 @@ def show_tool(name, args):
 
 def pick_default_account():
     """Показать ящики и дать выбрать ящик по умолчанию."""
-    print("\n⏳ Спрашиваю у Почты список ящиков…")
+    print("\n⏳ Читаю ящики из config.yaml и .env…")
     try:
         accs = mail.accounts_info()
-    except mail.MailNotAuthorized:
-        print("❌ macOS не разрешает управлять Почтой. Настройки →")
-        print("   Конфиденциальность и безопасность → Автоматизация → Terminal → Mail.")
-        sys.exit(1)
-    except mail.MailError as e:
+    except (mail.MailError, config.ConfigError) as e:
         print(f"⚠️  Не смог получить список ящиков: {e}")
         return None, []
     if not accs:
-        print("⚠️  Почта не вернула ни одного ящика.")
+        print("⚠️  Ни одного ящика с заполненными данными в .env (см. .env.example).")
         return None, []
-    print(" Ящики Почты:")
+    print(" Ящики:")
     for i, a in enumerate(accs, 1):
         em = f" — {a['email']}" if a.get("email") and a["email"] != "?" else ""
         print(f"   {i}. {a['name']}{em}")
@@ -70,7 +67,7 @@ def pick_default_account():
 def main():
     cfg = config.load()
     print("═" * 56)
-    print(" Почтовый агент — этап 3 (чтение + действия с подтверждением)")
+    print(" Почтовый агент — чтение и действия с подтверждением (IMAP)")
     print(f" Модель: {cfg['llm']['model']}  |  /new — заново, /exit — выход")
     print(f" Лог: {agent_log.LOG_FILE.relative_to(agent_log.LOG_DIR.parent)}")
     print("═" * 56)
@@ -109,15 +106,11 @@ def main():
             reply = core.run_turn(
                 history, text, on_tool=show_tool,
                 on_progress=lambda t: print(f"{DIM}   … {t}{RESET}"))
-        except mail.MailNotAuthorized:
-            print("\n❌ macOS не разрешает управлять Почтой. Настройки →")
-            print("   Конфиденциальность и безопасность → Автоматизация → Terminal → Mail.")
-            continue
         except llm.LLMError as e:
             print(f"\n❌ Проблема с моделью: {e}")
             continue
-        except mail.MailError as e:
-            print(f"\n❌ Проблема с Почтой: {e}")
+        except (mail.MailError, config.ConfigError) as e:
+            print(f"\n❌ Проблема с почтой: {e}")
             continue
         dt = time.monotonic() - t0
         print(f"\nагент: {plain(reply)}")

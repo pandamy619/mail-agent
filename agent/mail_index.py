@@ -2,8 +2,8 @@
 """
 Локальный индекс писем (SQLite, стандартная библиотека).
 
-Зачем: AppleScript отдаёт свойства писем по ~30–60 мс за штуку, поэтому
-поиск по всей истории (20+ тыс. писем) на каждый запрос невозможен.
+Зачем: читать заголовки всей истории (20+ тыс. писем) с IMAP-сервера на
+каждый запрос долго и накладно для сервера.
 Индекс строится ОДИН раз (scripts/build_index.py), дальше дообновляется
 бесплатно при каждом обычном скане — и поиск по всей истории становится
 мгновенным.
@@ -216,6 +216,15 @@ def delete_ids(account: str, ids: list) -> int:
     n = cur.rowcount
     con.close()
     return n
+
+
+def known_ids(account: str) -> set:
+    """Все id писем ящика, которые уже есть в индексе."""
+    con = _conn()
+    out = {r[0] for r in con.execute(
+        "SELECT mid FROM messages WHERE account = ?", [account]).fetchall()}
+    con.close()
+    return out
 
 
 def counts() -> dict:
