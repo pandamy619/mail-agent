@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Этап 5: одна фоновая проверка почты. Запускается launchd каждые N минут
-(scripts/schedule_install.sh) или вручную: python3 scripts/check_mail.py
+Этап 5: фоновая проверка почты. В Docker работает циклом (--loop),
+разово — вручную: python3 scripts/check_mail.py
 
 Что делает за один запуск:
 1. Смотрит новые письма во всех ящиках (по стабильным id, дважды не пингует).
@@ -341,7 +341,7 @@ if __name__ == "__main__":
 
     ap = argparse.ArgumentParser(
         description="Проверка почты: разово или циклом в терминале "
-                    "(launchd — отдельная опция, см. schedule_install.sh)")
+                    "(в Docker используется --loop)")
     ap.add_argument("--loop", action="store_true",
                     help="работать в терминале постоянно: проверка каждые N минут "
                          "из конфига, остановка — Ctrl+C (лог виден, демон не нужен)")
@@ -382,7 +382,7 @@ if __name__ == "__main__":
                            .get("check_interval_min", 15))
         print("═" * 56)
         print(f" Фоновая проверка в терминале — каждые {interval_min} мин")
-        print(" Остановить: Ctrl+C   (демоны и launchd не используются)")
+        print(" Остановить: Ctrl+C")
         print("═" * 56)
         try:
             while True:

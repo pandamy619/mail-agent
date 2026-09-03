@@ -22,7 +22,7 @@ SHOW_CAP = 10          # больше 10 карточек за вызов мод
 MAX_HISTORY = 40       # сколько последних сообщений держим в контексте
 
 SYSTEM_PROMPT = """Ты — личный почтовый ассистент Влада. Ты работаешь с его \
-Почтой на маке.
+почтовыми ящиками по IMAP.
 
 {accounts_line}
 {rules_section}
@@ -54,10 +54,9 @@ account). id стабильны — можно использовать и ст�
 total — называй пользователю общее число («нашёл 312, показываю 15»). Если \
 инструмент ответил, что индекс не построен, — предложи запустить \
 python3 scripts/build_index.py, а пока ищи в последних письмах.
-- Чтение и действия со СТАРЫМИ письмами (не из последних ~150) требуют \
-поиска по всему ящику — предупреждай, что выполнение может занять минуту-две.
 - Действия без подтверждения: mark_read (обратимо) и черновики create_draft / \
-reply_draft — письмо только открывается в Почте, отправляет его сам пользователь.
+reply_draft — черновик сохраняется в папке «Черновики» ящика, отправляет его \
+сам пользователь из своего почтового клиента.
 - Опасные действия (trash_messages, move_messages, trash_by_filter, \
 move_by_filter, empty_trash) двухфазные: вызов лишь создаёт ЗАЯВКУ и ничего \
 не делает. Получив заявку, перескажи пользователю сводку с ТОЧНЫМ числом из \
@@ -167,8 +166,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "read_mail",
-            "description": "Полный текст письма по его id из результатов list_/search_. "
-                           "Старое письмо ищется по всему ящику — может занять минуты",
+            "description": "Полный текст письма по его id из результатов list_/search_",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -365,16 +363,17 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "create_draft",
-            "description": "Создать черновик нового письма — оно откроется в Почте, "
-                           "отправляет пользователь сам",
+            "description": "Создать черновик нового письма в папке «Черновики» "
+                           "указанного ящика — отправляет пользователь сам",
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "account": _ACCOUNT_PARAM,
                     "to": {"type": "string", "description": "адрес получателя"},
                     "subject": {"type": "string"},
                     "body": {"type": "string", "description": "текст письма"},
                 },
-                "required": ["to", "subject", "body"],
+                "required": ["account", "to", "subject", "body"],
             },
         },
     },
@@ -382,8 +381,8 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "reply_draft",
-            "description": "Открыть окно ответа на письмо (по id, с готовым текстом, "
-                           "если задан body) — отправляет пользователь сам",
+            "description": "Сохранить черновик ответа на письмо (по id, с текстом body "
+                           "и цитатой оригинала) — отправляет пользователь сам",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -509,7 +508,7 @@ def _make_pending(op: str, acc: str, args: dict) -> str:
                                 for r in approx["rows"]] if approx else []),
                    "note": "исполнитель пройдёт по живому ящику и обработает "
                            "все совпавшие на момент выполнения; на большом "
-                           "ящике это займёт минуты — предупреди пользователя"}
+                           "ящике это может занять около минуты"}
         payload["instruction"] = ("покажи пользователю сводку и спроси "
                                   "разрешения; после его нового "
                                   "сообщения-согласия вызови confirm_action, "
@@ -544,9 +543,7 @@ def _make_pending(op: str, acc: str, args: dict) -> str:
         _pending = {"op": op, "account": acc, "ids": ids,
                     "target": target, "summary": summary,
                     "umsg": _user_msg_count}
-        payload = {"pending": True, "summary": summary, "letters": letters,
-                   "note": "если письма старые, выполнение может занять "
-                           "несколько минут — предупреди пользователя"}
+        payload = {"pending": True, "summary": summary, "letters": letters}
     payload["instruction"] = ("покажи пользователю сводку и спроси разрешения; "
                               "после его нового сообщения-согласия вызови "
                               "confirm_action, при отказе — cancel_action")
@@ -624,11 +621,9 @@ def _confirm() -> str:
                    "left_in_trash": res["after"]}
         if res["after"] > 0:
             payload["warning"] = (
-                "корзина не опустела — сообщи пользователю числа и причину: "
-                "скорее всего, Терминалу не хватает разрешения «Универсальный "
-                "доступ» (Настройки → Конфиденциальность и безопасность → "
-                "Универсальный доступ → включить Terminal), после чего "
-                "повторить очистку"
+                "корзина опустела не полностью — сообщи пользователю числа "
+                "и предложи повторить очистку; частая причина — сервер "
+                "ещё синхронизирует папку"
             )
         return json.dumps(payload, ensure_ascii=False)
     return json.dumps({"error": f"неизвестная заявка {p['op']}"},
@@ -792,7 +787,8 @@ def execute_tool(name: str, args: dict) -> str:
                                    "при следующем «забудь» сверься с list_rules"},
                           ensure_ascii=False)
     if name == "create_draft":
-        result = mail_actions.create_draft(args.get("to", ""),
+        result = mail_actions.create_draft(mail.resolve_account(acc),
+                                           args.get("to", ""),
                                            args.get("subject", ""),
                                            args.get("body", ""))
         return json.dumps({"result": result}, ensure_ascii=False)
@@ -800,13 +796,8 @@ def execute_tool(name: str, args: dict) -> str:
         if "id" not in args:
             return json.dumps({"error": "нужен id письма"}, ensure_ascii=False)
         canon = mail.resolve_account(acc)
-        mid = int(args["id"])
-        pos = mail.locate_ids(canon, [mid])
-        if mid not in pos:
-            return json.dumps({"error": f"письмо id {mid} не найдено во "
-                                        f"«Входящих» {canon}"}, ensure_ascii=False)
-        result = mail_actions.reply_draft(canon, pos[mid], args.get("body", ""),
-                                          expected_id=mid)
+        result = mail_actions.reply_draft(canon, int(args["id"]),
+                                          args.get("body", ""))
         return json.dumps({"result": result}, ensure_ascii=False)
     return json.dumps({"error": f"неизвестный инструмент {name}"}, ensure_ascii=False)
 
@@ -903,9 +894,6 @@ def _run_turn_inner(history: list, on_tool=None) -> str:
                 result = execute_tool(name, args)
                 lg.info(f"tool {name} {json.dumps(args, ensure_ascii=False)} → "
                         f"{len(result)} байт за {time.monotonic() - t0:.2f} с")
-            except mail.MailNotAuthorized:
-                lg.error(f"tool {name}: нет разрешения Автоматизации")
-                raise
             except Exception as e:  # noqa: BLE001 — ошибка уходит модели
                 lg.warning(f"tool {name} {json.dumps(args, ensure_ascii=False)} → "
                            f"ERROR {e} за {time.monotonic() - t0:.2f} с")

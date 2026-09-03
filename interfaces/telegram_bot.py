@@ -30,7 +30,7 @@ from agent.tools import mail, mail_actions  # noqa: E402
 
 lg = agent_log.get()
 
-HELP = ("Я почтовый агент на вашем маке. Примеры:\n"
+HELP = ("Я ваш почтовый агент. Примеры:\n"
         "— что непрочитанного?\n"
         "— найди письма от GitLab\n"
         "— о чём последнее письмо от Авиасейлс?\n"
@@ -159,14 +159,10 @@ class Bot:
         try:
             reply = core.run_turn(self.history, text, on_tool=track,
                                   on_progress=status)
-        except mail.MailNotAuthorized:
-            reply = ("macOS не разрешает управлять Почтой. На маке: Настройки → "
-                     "Конфиденциальность и безопасность → Автоматизация → "
-                     "Terminal → включить Mail.")
         except llm.LLMError as e:
             reply = f"Проблема с моделью: {e}"
-        except mail.MailError as e:
-            reply = f"Проблема с Почтой: {e}"
+        except (mail.MailError, config.ConfigError) as e:
+            reply = f"Проблема с почтой: {e}"
         status.finish()
         markup = CONFIRM_KB if core.has_pending() else None
         self.send(chat_id, core.plain(reply) + self._footer(used), markup)
@@ -279,8 +275,8 @@ def main():
     accounts = []
     try:
         accounts = mail.accounts_info()
-    except mail.MailError as e:
-        print(f"⚠️  Не смог получить ящики из Почты ({e}) — продолжаю без адресов.")
+    except (mail.MailError, config.ConfigError) as e:
+        print(f"⚠️  Не смог прочитать ящики ({e}) — продолжаю без адресов.")
 
     bot = Bot(token, my_id, default_account=default_acc, accounts=accounts)
     me = bot.api("getMe", http_timeout=15)
