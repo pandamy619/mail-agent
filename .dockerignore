@@ -1,0 +1,15 @@
+# В образ не попадают секреты, состояние и всё лишнее — они монтируются volume
+.env
+.env.*
+!.env.example
+state/
+data/
+logs/
+.git/
+.gitignore
+__pycache__/
+*.pyc
+.venv/
+tests/
+*.md
+.DS_Store
