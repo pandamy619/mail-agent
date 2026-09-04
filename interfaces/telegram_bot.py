@@ -5,9 +5,13 @@ Telegram-интерфейс почтового агента (этап 4). Без
 напрямую через Telegram Bot API (long polling).
 
 Безопасность:
-- токен и ваш Telegram-id — только в .env (не в git);
-- бот исполняет команды ТОЛЬКО с вашего id; чужие сообщения игнорируются
-  и пишутся в лог;
+- токен и ваш Telegram-id — в .env или переменных окружения (не в git);
+- бот исполняет команды ТОЛЬКО от вашего id и ТОЛЬКО в личном чате с вами
+  (в группе ваши же команды игнорируются — иначе почта утекла бы участникам);
+  чужие сообщения игнорируются и пишутся в лог;
+- кнопка «очистить корзины» действует один раз и только в день вопроса,
+  смещение обработанных апдейтов хранится в state/ — после рестарта
+  Telegram не заставит бота повторить очистку;
 - пока TELEGRAM_USER_ID пуст, бот на любое сообщение отвечает только вашим
   id (чтобы вписать его в .env) и ничего не выполняет;
 - код-гейт подтверждений — общий с CLI (живёт в ядре): кнопка [Да] — это
@@ -21,6 +25,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -29,6 +34,22 @@ from agent import log as agent_log  # noqa: E402
 from agent.tools import mail, mail_actions  # noqa: E402
 
 lg = agent_log.get()
+
+STATE_DIR = Path(__file__).resolve().parents[1] / "state"
+OFFSET_FILE = STATE_DIR / "telegram_offset"     # последний обработанный update_id + 1
+CLEANUP_DONE_FILE = STATE_DIR / "cleanup_done.json"
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
 HELP = ("Я ваш почтовый агент. Примеры:\n"
         "— что непрочитанного?\n"
@@ -167,20 +188,70 @@ class Bot:
         markup = CONFIRM_KB if core.has_pending() else None
         self.send(chat_id, core.plain(reply) + self._footer(used), markup)
 
+    def _allowed(self, uid, chat_id, what: str) -> bool:
+        """Команда принимается только от владельца и только в личном чате
+        с ним (в личном чате chat.id == user.id). В группе даже свои
+        сообщения игнорируются — ответ с почтой ушёл бы всем участникам."""
+        if uid != self.my_id:
+            lg.warning(f"telegram: ЧУЖОЕ {what} от id {uid} — игнорирую")
+            return False
+        if chat_id != self.my_id:
+            lg.warning(f"telegram: {what} от владельца, но не в личном чате "
+                       f"(chat {chat_id}) — игнорирую")
+            return False
+        return True
+
+    def handle_cleanup(self, chat_id, data: str):
+        """Очистка корзин по кнопке — детерминированно, без модели: кнопку
+        нажал человек, исполняет код с пересчётом. Кнопка действует только
+        в день вопроса и один раз в день."""
+        action, _, day = data.partition(":")
+        today = date.today().isoformat()
+        if day != today:
+            lg.info(f"telegram: устаревшая кнопка очистки ({data}) — не исполняю")
+            self.send(chat_id, "Эта кнопка устарела — вопрос про корзину "
+                               "придёт снова вечером.")
+            return
+        if action == "cleanup_no":
+            self.send(chat_id, "Ок, корзины не трогаю — спрошу завтра.")
+            return
+        if _read_json(CLEANUP_DONE_FILE).get("date") == today:
+            lg.info("telegram: очистка сегодня уже выполнена — повтор не исполняю")
+            self.send(chat_id, "Корзины сегодня уже чистил — повторно не трогаю.")
+            return
+        # отметка ДО очистки: если упадём посередине, повтора не будет
+        _write_json(CLEANUP_DONE_FILE,
+                    {"date": today, "at": datetime.now().isoformat(timespec="seconds")})
+        lines = []
+        for a in mail.accounts_info():
+            try:
+                res = mail_actions.empty_trash(a["name"])
+            except mail.MailError as e:
+                lines.append(f"{a['name']}: ошибка ({str(e)[:80]})")
+                continue
+            if res["before"] > 0:
+                ok = "" if res["after"] == 0 else " ⚠ не всё"
+                lines.append(f"{a['name']}: было {res['before']}, "
+                             f"осталось {res['after']}{ok}")
+        lg.info(f"telegram: очистка корзин по кнопке: {lines}")
+        self.send(chat_id, "🗑 Очистка корзин:\n"
+                  + ("\n".join(lines) or "корзины уже пусты"))
+
     def handle(self, update: dict):
         if "message" in update:
             msg = update["message"]
             uid = msg.get("from", {}).get("id")
             chat_id = msg.get("chat", {}).get("id")
             if self.my_id is None:
+                if msg.get("chat", {}).get("type") != "private":
+                    return
                 lg.info(f"telegram: сообщение от id {uid}, TELEGRAM_USER_ID не задан")
                 self.send(chat_id,
                           f"Ваш Telegram ID: {uid}\n"
                           f"Впишите в .env строку TELEGRAM_USER_ID={uid} "
                           "и перезапустите бота. До этого я ничего не выполняю.")
                 return
-            if uid != self.my_id:
-                lg.warning(f"telegram: ЧУЖОЕ сообщение от id {uid} — игнорирую")
+            if not self._allowed(uid, chat_id, "сообщение"):
                 return
             text = (msg.get("text") or "").strip()
             if not text:
@@ -205,8 +276,7 @@ class Bot:
                          callback_query_id=cq["id"])
             except RuntimeError:
                 pass
-            if self.my_id is None or uid != self.my_id:
-                lg.warning(f"telegram: ЧУЖОЕ нажатие кнопки от id {uid} — игнорирую")
+            if self.my_id is None or not self._allowed(uid, chat_id, "нажатие кнопки"):
                 return
             try:  # убрать кнопки, чтобы не нажать дважды
                 self.api("editMessageReplyMarkup", http_timeout=15,
@@ -214,33 +284,20 @@ class Bot:
                          message_id=cq.get("message", {}).get("message_id"))
             except RuntimeError:
                 pass
-            data = cq.get("data")
-            if data in ("cleanup_yes", "cleanup_no"):
-                # очистка корзин — детерминированно, без участия модели:
-                # кнопку нажал человек, исполняет код с пересчётом
-                if data == "cleanup_no":
-                    self.send(chat_id, "Ок, корзины не трогаю — спрошу завтра.")
-                    return
-                lines = []
-                for a in mail.accounts_info():
-                    try:
-                        res = mail_actions.empty_trash(a["name"])
-                    except mail.MailError as e:
-                        lines.append(f"{a['name']}: ошибка ({str(e)[:80]})")
-                        continue
-                    if res["before"] > 0:
-                        ok = "" if res["after"] == 0 else " ⚠ не всё"
-                        lines.append(f"{a['name']}: было {res['before']}, "
-                                     f"осталось {res['after']}{ok}")
-                lg.info(f"telegram: очистка корзин по кнопке: {lines}")
-                self.send(chat_id, "🗑 Очистка корзин:\n"
-                          + ("\n".join(lines) or "корзины уже пусты"))
+            data = cq.get("data") or ""
+            if data.startswith("cleanup_"):
+                self.handle_cleanup(chat_id, data)
                 return
             answer = "да" if data == "yes" else "нет"
             self.run_agent(chat_id, answer)
 
     def loop(self):
-        offset = 0
+        # смещение переживает рестарт: иначе Telegram переотправит апдейты,
+        # обработанные до падения (в том числе нажатые кнопки)
+        try:
+            offset = int(OFFSET_FILE.read_text(encoding="utf-8").strip() or 0)
+        except (OSError, ValueError):
+            offset = 0
         while True:
             try:
                 updates = self.api("getUpdates", http_timeout=65,
@@ -252,21 +309,26 @@ class Bot:
             for u in updates:
                 offset = u["update_id"] + 1
                 try:
+                    OFFSET_FILE.parent.mkdir(exist_ok=True)
+                    OFFSET_FILE.write_text(str(offset), encoding="utf-8")
+                except OSError as e:
+                    lg.warning(f"telegram: не записал смещение: {e}")
+                try:
                     self.handle(u)
                 except Exception as e:  # noqa: BLE001 — бот не должен падать
                     lg.error(f"telegram: ошибка обработки: {e}")
 
 
 def main():
-    env = config.load_env()
-    token = env.get("TELEGRAM_BOT_TOKEN", "").strip()
+    # env_get: переменная окружения (Docker) приоритетнее .env
+    token = config.env_get("TELEGRAM_BOT_TOKEN")
     if not token:
         print("❌ Не задан TELEGRAM_BOT_TOKEN.")
         print("   1) В Telegram: @BotFather → /newbot → скопируйте токен")
         print("   2) cp .env.example .env  и впишите токен")
         print("   Подробности — в SETUP.md, раздел «Этап 4».")
         sys.exit(1)
-    uid_raw = env.get("TELEGRAM_USER_ID", "").strip()
+    uid_raw = config.env_get("TELEGRAM_USER_ID")
     my_id = int(uid_raw) if uid_raw.lstrip("-").isdigit() else None
 
     default_acc = (config.load().get("mail", {}).get("default_account") or "")

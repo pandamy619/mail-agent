@@ -32,9 +32,10 @@ lg = get_log()
 STATE_DIR = ROOT / "state"
 STATE_FILE = STATE_DIR / "proactive.json"
 LOCK_FILE = STATE_DIR / "lock"
-IMPORTANCE_FILE = ROOT / "importance.md"
+IMPORTANCE_FILE = ROOT / "data" / "importance.md"
 SEEN_CAP = 500      # сколько id помним на ящик
-WINDOW = 30         # окно свежих писем за проверку
+WINDOW = 100        # окно свежих писем за проверку (по IMAP это дёшево;
+                    # 30 не хватало в плотный день — письма пропускались)
 
 
 # ── состояние ───────────────────────────────────────────────────────
@@ -89,11 +90,11 @@ def in_quiet(now_t, rng):
 # ── telegram ────────────────────────────────────────────────────────
 
 def tg_send(text: str, markup: dict = None) -> bool:
-    env = config.load_env()
-    token = env.get("TELEGRAM_BOT_TOKEN", "").strip()
-    chat = env.get("TELEGRAM_USER_ID", "").strip()
-    if not token or not chat:
-        lg.error("proactive: пуш невозможен — нет токена/ID в .env")
+    # env_get: переменная окружения (Docker) приоритетнее .env
+    token = config.env_get("TELEGRAM_BOT_TOKEN")
+    chat = config.env_get("TELEGRAM_USER_ID")
+    if not token or not chat.lstrip("-").isdigit():
+        lg.error("proactive: пуш невозможен — нет TELEGRAM_BOT_TOKEN/TELEGRAM_USER_ID")
         return False
     payload = {"chat_id": int(chat), "text": text[:4000]}
     if markup:
@@ -111,9 +112,14 @@ def tg_send(text: str, markup: dict = None) -> bool:
         return False
 
 
-CLEANUP_KB = {"inline_keyboard": [[{"text": "✅ Да, очистить",
-                                    "callback_data": "cleanup_yes"},
-                                   {"text": "❌ Нет", "callback_data": "cleanup_no"}]]}
+def cleanup_kb(day: str) -> dict:
+    """Кнопки вечернего вопроса. В callback_data зашита дата: бот исполняет
+    очистку только в день вопроса и только один раз (ревью 04.09: после
+    рестарта Telegram переотправляет необработанные нажатия)."""
+    return {"inline_keyboard": [[{"text": "✅ Да, очистить",
+                                  "callback_data": f"cleanup_yes:{day}"},
+                                 {"text": "❌ Нет",
+                                  "callback_data": f"cleanup_no:{day}"}]]}
 
 
 def run_auto_cleanup(send) -> None:
@@ -328,7 +334,7 @@ def _check(now, cfg, send):
             if parts:
                 send("🗑 Сейчас в корзине — " + ", ".join(parts) + ".\n"
                      "Очистить безвозвратно? Сотрёт корзины целиком, включая "
-                     "удалённое вручную.", markup=CLEANUP_KB)
+                     "удалённое вручную.", markup=cleanup_kb(today))
                 lg.info(f"cleanup: вечерний вопрос ({parts})")
             st["last_cleanup_ask"] = today
 
@@ -354,7 +360,9 @@ if __name__ == "__main__":
                          "базовую линию (пингов о старых письмах не будет)")
     args = ap.parse_args()
 
-    if args.verbose or args.loop:   # в цикле лог всегда на экране
+    already_on_screen = any(type(h) is logging.StreamHandler for h in lg.handlers)
+    if (args.verbose or args.loop) and not already_on_screen:
+        # в цикле лог всегда на экране (если его уже не включил LOG_STDOUT)
         h = logging.StreamHandler()
         h.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-7s | %(message)s"))
         lg.addHandler(h)
