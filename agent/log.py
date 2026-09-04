@@ -15,7 +15,10 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 LOG_DIR = Path(__file__).resolve().parents[1] / "logs"
-LOG_FILE = LOG_DIR / "agent.log"
+# LOG_FILE_NAME — отдельный файл на процесс (в Docker бот и проверка пишут
+# в разные файлы: два процесса на одном RotatingFileHandler теряют строки
+# при ротации)
+LOG_FILE = LOG_DIR / (os.environ.get("LOG_FILE_NAME", "").strip() or "agent.log")
 
 _logger = None
 

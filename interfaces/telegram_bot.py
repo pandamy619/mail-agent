@@ -346,7 +346,7 @@ def main():
     print(f" Telegram-бот: @{me.get('username')}  (этап 4)")
     print(f" Доступ: {'только id ' + str(my_id) if my_id else 'id не задан — бот только сообщит ваш id'}")
     print(f" Ящик по умолчанию: {default_acc or 'не задан — агент уточнит'}")
-    print(f" Лог: logs/agent.log  |  остановить: Ctrl+C")
+    print(f" Лог: logs/{agent_log.LOG_FILE.name}  |  остановить: Ctrl+C")
     print("═" * 56)
     lg.info(f"=== старт Telegram-бота @{me.get('username')}, id={my_id}, "
             f"ящик={default_acc} ===")

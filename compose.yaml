@@ -1,0 +1,50 @@
+# Почтовый агент на сервере: два сервиса из одного образа.
+#   bot     — Telegram-бот (диалог, заявки с подтверждением)
+#   checker — фоновая проверка почты каждые N минут (пуши, дайджест, авто-уборка)
+# Ollama остаётся на хосте (systemd, OLLAMA_HOST=0.0.0.0) и видна из
+# контейнеров как host.docker.internal (через сеть bridge — см. network_mode).
+#
+# Запуск:   docker compose up -d --build
+# Логи:     docker compose logs -f bot   (или в Portainer)
+# Проверка: docker compose run --rm bot python3 scripts/test_mail.py
+
+x-agent: &agent
+  build: .
+  image: mail-agent:latest
+  env_file: .env                     # секреты: пароли ящиков, токен бота
+  environment: &agent-env
+    TZ: Europe/Moscow                # тихие часы и время дайджеста — по этому времени
+    LLM_BASE_URL: http://host.docker.internal:11434/v1
+    LOG_STDOUT: "1"
+  # стандартная сеть bridge (172.17.x), как у open-webui: файрвол хоста
+  # пускает к Ollama только из неё, из отдельной compose-сети — таймаут
+  network_mode: bridge
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  volumes:
+    - ./state:/app/state             # индекс, состояние проверки, смещение Telegram
+    - ./data:/app/data               # rules.md (память агента), importance.md
+    - ./logs:/app/logs               # logs/agent.log с ротацией
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "5m"
+      max-file: "3"
+
+services:
+  bot:
+    <<: *agent
+    container_name: mail-agent-bot
+    environment:
+      <<: *agent-env
+      LOG_FILE_NAME: agent-bot.log
+    command: ["python3", "interfaces/telegram_bot.py"]
+
+  checker:
+    <<: *agent
+    container_name: mail-agent-checker
+    environment:
+      <<: *agent-env
+      LOG_FILE_NAME: agent-checker.log
+    command: ["python3", "scripts/check_mail.py", "--loop"]
