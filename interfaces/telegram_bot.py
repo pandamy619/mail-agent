@@ -22,6 +22,7 @@ Telegram-интерфейс почтового агента (этап 4). Без
 """
 import json
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -350,6 +351,15 @@ def main():
     print("═" * 56)
     lg.info(f"=== старт Telegram-бота @{me.get('username')}, id={my_id}, "
             f"ящик={default_acc} ===")
+
+    def _warm():
+        # первый вызов после (пере)запуска Ollama холодный (81 с на этом
+        # сервере) — греем кэш промпта в фоне, не задерживая опрос Telegram
+        try:
+            lg.info(f"прогрев модели: {core.warmup():.0f} с")
+        except Exception as e:  # noqa: BLE001
+            lg.warning(f"прогрев модели не удался: {e}")
+    threading.Thread(target=_warm, name="warmup", daemon=True).start()
     try:
         bot.loop()
     except KeyboardInterrupt:
