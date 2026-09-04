@@ -2,7 +2,8 @@
 """
 Постоянные правила агента (этап 6a).
 
-Хранилище — rules.md в корне проекта: одна строка «- …» = одно правило,
+Хранилище — data/rules.md (папка данных, монтируется в Docker как
+volume и в git не попадает): одна строка «- …» = одно правило,
 с датой добавления. Правила вклеиваются в системный промпт ПЕРЕД КАЖДЫМ
 ходом диалога (вступают в силу немедленно) и в критерии классификатора
 важности при каждой фоновой проверке.
@@ -14,7 +15,7 @@ from pathlib import Path
 
 from .log import get as _log
 
-RULES_FILE = Path(__file__).resolve().parents[1] / "rules.md"
+RULES_FILE = Path(__file__).resolve().parents[1] / "data" / "rules.md"
 MAX_RULES = 50
 MAX_LEN = 200
 
@@ -42,6 +43,7 @@ def load_rules() -> list:
 
 def _write(rules: list) -> None:
     body = "".join(f"- {r}\n" for r in rules)
+    RULES_FILE.parent.mkdir(exist_ok=True)
     RULES_FILE.write_text(_HEADER + body, encoding="utf-8")
 
 

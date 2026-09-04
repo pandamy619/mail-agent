@@ -14,3 +14,7 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# Данные, которые агент меняет в рантайме (монтируются как volume)
+data/rules.md
+data/*.json

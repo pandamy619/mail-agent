@@ -3,7 +3,7 @@
 # Секреты (логины, пароли приложений, токен Telegram) — только в .env.
 
 llm:
-  base_url: "http://localhost:11434/v1"  # Ollama; из Docker — http://host.docker.internal:11434/v1
+  base_url: "http://localhost:11434/v1"  # Ollama; Docker переопределяет переменной LLM_BASE_URL
   model: "qwen3:14b"
   api_key: "ollama"                      # локально не проверяется, нужен клиенту
 

@@ -2,8 +2,10 @@
 """
 Клиент Ollama — нативный API /api/chat, без внешних зависимостей.
 
-base_url берётся из config.yaml (хвост «/v1» отбрасывается — он нужен
-только OpenAI-совместимым клиентам). Для qwen3 отключаем режим
+base_url берётся из переменной окружения LLM_BASE_URL (так его задаёт
+Docker: из контейнера Ollama на хосте видна как host.docker.internal),
+иначе из config.yaml. Хвост «/v1» отбрасывается — он нужен только
+OpenAI-совместимым клиентам. Для qwen3 отключаем режим
 «размышлений» (think) ради скорости; если сервер/модель его не знает —
 повторяем запрос без этого параметра.
 """
@@ -22,7 +24,8 @@ class LLMError(Exception):
 
 
 def _root() -> str:
-    base = config.load()["llm"]["base_url"].rstrip("/")
+    base = (config.env_get("LLM_BASE_URL")
+            or config.load()["llm"]["base_url"]).rstrip("/")
     if base.endswith("/v1"):
         base = base[:-3].rstrip("/")
     return base

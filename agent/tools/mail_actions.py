@@ -293,6 +293,15 @@ def reply_draft(account: str, mid: int, body: str = "") -> str:
     reply_to = orig.get("Reply-To") or orig.get("From") or ""
     if not parseaddr(reply_to)[1]:
         raise MailError("в письме нет адреса отправителя — некому отвечать")
+    # Reply-To задаёт отправитель письма; если он отличается от From —
+    # это может быть подмена адреса ответа, пользователь должен это увидеть
+    from_addr = parseaddr(orig.get("From") or "")[1].lower()
+    to_addr = parseaddr(reply_to)[1].lower()
+    note = ""
+    if orig.get("Reply-To") and from_addr and to_addr != from_addr:
+        note = (f"; ВНИМАНИЕ: ответ адресован {to_addr} (заголовок Reply-To), "
+                f"а письмо пришло от {from_addr} — обязательно скажи это "
+                "пользователю")
     subject = (orig.get("Subject") or "").strip()
     if not subject.lower().startswith("re:"):
         subject = "Re: " + subject
@@ -321,4 +330,5 @@ def reply_draft(account: str, mid: int, body: str = "") -> str:
         content += f"\n\n{who} писал(а):\n{quoted}\n"
     msg.set_content(content)
     folder = _append_draft(acc, msg)
-    return f"черновик ответа сохранён в папке «{folder}» ящика {acc}; отправка — за пользователем"
+    return (f"черновик ответа сохранён в папке «{folder}» ящика {acc}; "
+            f"отправка — за пользователем{note}")

@@ -4,8 +4,13 @@
 
 В лог пишутся все вызовы модели, инструментов и IMAP-команд
 с длительностями — по нему разбираем любые тормоза и ошибки.
+
+LOG_STDOUT=1 в окружении — тот же лог дублируется в stdout
+(в Docker его показывают docker logs и Portainer).
 """
 import logging
+import os
+import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -27,6 +32,11 @@ def get() -> logging.Logger:
             h.setFormatter(logging.Formatter(
                 "%(asctime)s | %(levelname)-7s | %(message)s"))
             lg.addHandler(h)
+            if os.environ.get("LOG_STDOUT", "").strip().lower() not in ("", "0", "false", "no"):
+                sh = logging.StreamHandler(sys.stdout)
+                sh.setFormatter(logging.Formatter(
+                    "%(asctime)s | %(levelname)-7s | %(message)s"))
+                lg.addHandler(sh)
         lg.propagate = False
         _logger = lg
     return _logger
