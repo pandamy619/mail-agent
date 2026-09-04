@@ -5,6 +5,8 @@
 Пачка новых писем уходит в локальную модель ОДНИМ вызовом вместе с
 критериями из importance.md; обратно — только номера важных с причинами.
 Никаких инструментов у модели здесь нет — чистая сортировка текста.
+Модель — proactive.model из config.yaml (отдельная от чата, чтобы не
+вытеснять кэш промпта бота).
 """
 import json
 import re
@@ -30,7 +32,8 @@ def classify(letters: list, criteria: str) -> list:
         "Если важных нет — ответь []."
     )
     msg = llm.chat([{"role": "system", "content": system},
-                    {"role": "user", "content": numbered}])
+                    {"role": "user", "content": numbered}],
+                   model=llm.proactive_model(), think=llm.proactive_think())
     text = msg.get("content", "")
     m = re.search(r"\[.*\]", text, re.S)
     if not m:

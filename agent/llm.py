@@ -57,15 +57,32 @@ def _strip_think(text: str) -> str:
     return re.sub(r"<think>.*?</think>", "", text or "", flags=re.S).strip()
 
 
-def chat(messages: list, tools: list = None) -> dict:
-    """Один запрос к модели. Возвращает message: {content, tool_calls?}."""
+def proactive_model() -> str:
+    """Модель фоновых задач (proactive.model) или None — тогда модель чата."""
+    m = str((config.load().get("proactive") or {}).get("model") or "").strip()
+    return m or None
+
+
+def proactive_think() -> bool:
+    """Размышления для фоновых задач (proactive.think, по умолчанию да)."""
+    v = (config.load().get("proactive") or {}).get("think", True)
+    return bool(v)
+
+
+def chat(messages: list, tools: list = None, model: str = None,
+         think: bool = False) -> dict:
+    """Один запрос к модели. Возвращает message: {content, tool_calls?}.
+    model — переопределить модель из config; think — режим размышлений
+    (для чата выключен ради скорости, для фоновых задач см. proactive.think)."""
     lg = _log()
-    cfg = config.load()["llm"]
+    cfg = dict(config.load()["llm"])
+    if model:
+        cfg["model"] = model
     payload = {
         "model": cfg["model"],
         "messages": messages,
         "stream": False,
-        "think": False,
+        "think": bool(think),
         "keep_alive": str(cfg.get("keep_alive") or "24h"),
         "options": {"num_ctx": int(cfg.get("num_ctx") or 16384)},
     }
