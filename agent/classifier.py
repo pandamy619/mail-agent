@@ -33,7 +33,8 @@ def classify(letters: list, criteria: str) -> list:
     )
     msg = llm.chat([{"role": "system", "content": system},
                     {"role": "user", "content": numbered}],
-                   model=llm.proactive_model(), think=llm.proactive_think())
+                   model=llm.proactive_model(), think=llm.proactive_think(),
+                   num_gpu=llm.proactive_num_gpu())
     text = msg.get("content", "")
     m = re.search(r"\[.*\]", text, re.S)
     if not m:

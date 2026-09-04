@@ -63,6 +63,18 @@ def proactive_model() -> str:
     return m or None
 
 
+def proactive_num_gpu():
+    """proactive.num_gpu — сколько слоёв фоновой модели класть на GPU
+    (0 — только CPU); None — не задано, решает Ollama."""
+    v = (config.load().get("proactive") or {}).get("num_gpu")
+    if v is None or v == "":
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def proactive_think() -> bool:
     """Размышления для фоновых задач (proactive.think, по умолчанию да)."""
     v = (config.load().get("proactive") or {}).get("think", True)
@@ -70,21 +82,25 @@ def proactive_think() -> bool:
 
 
 def chat(messages: list, tools: list = None, model: str = None,
-         think: bool = False) -> dict:
+         think: bool = False, num_gpu: int = None) -> dict:
     """Один запрос к модели. Возвращает message: {content, tool_calls?}.
     model — переопределить модель из config; think — режим размышлений
-    (для чата выключен ради скорости, для фоновых задач см. proactive.think)."""
+    (для чата выключен ради скорости, для фоновых задач см. proactive.think);
+    num_gpu — слоёв на GPU (None — решает Ollama)."""
     lg = _log()
     cfg = dict(config.load()["llm"])
     if model:
         cfg["model"] = model
+    options = {"num_ctx": int(cfg.get("num_ctx") or 16384)}
+    if num_gpu is not None:
+        options["num_gpu"] = int(num_gpu)
     payload = {
         "model": cfg["model"],
         "messages": messages,
         "stream": False,
         "think": bool(think),
         "keep_alive": str(cfg.get("keep_alive") or "24h"),
-        "options": {"num_ctx": int(cfg.get("num_ctx") or 16384)},
+        "options": options,
     }
     if tools:
         payload["tools"] = tools
@@ -103,8 +119,8 @@ def chat(messages: list, tools: list = None, model: str = None,
     msg["content"] = _strip_think(msg.get("content", ""))
     calls = [tc.get("function", {}).get("name", "?")
              for tc in (msg.get("tool_calls") or [])]
-    # prompt_eval_count — сколько токенов промпта модель прожевала заново
-    # (без кэша — весь промпт, с кэшем — только хвост); eval_count — ответ
+    # prompt_eval_count — размер промпта в токенах (Ollama считает его целиком,
+    # и при попадании в кэш тоже); о кэше говорит время вызова. eval_count — ответ
     lg.debug(f"llm {cfg['model']}: {len(messages)} сообщ. → "
              f"{time.monotonic() - t0:.1f} с, prompt={resp.get('prompt_eval_count', '?')} "
              f"ток., ответ={resp.get('eval_count', '?')} ток., tool_calls={calls or '—'}")

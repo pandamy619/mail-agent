@@ -18,6 +18,7 @@ proactive:
   enabled: true
   model: "qwen3:4b"
   think: true
+  num_gpu: 0
 """
 
 
@@ -55,6 +56,12 @@ class ChatPayloadTest(unittest.TestCase):
                  think=llm.proactive_think())
         self.assertEqual(self.sent[0][1]["model"], "qwen3:4b")
         self.assertIs(self.sent[0][1]["think"], True)
+
+    def test_num_gpu_only_when_set(self):
+        llm.chat([{"role": "user", "content": "hi"}])
+        self.assertNotIn("num_gpu", self.sent[0][1]["options"])
+        llm.chat([{"role": "user", "content": "hi"}], num_gpu=llm.proactive_num_gpu())
+        self.assertEqual(self.sent[1][1]["options"]["num_gpu"], 0)
 
     def test_proactive_model_empty_means_chat_model(self):
         path = Path(self.tmp.name) / "config.yaml"
