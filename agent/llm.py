@@ -66,6 +66,8 @@ def chat(messages: list, tools: list = None) -> dict:
         "messages": messages,
         "stream": False,
         "think": False,
+        "keep_alive": str(cfg.get("keep_alive") or "24h"),
+        "options": {"num_ctx": int(cfg.get("num_ctx") or 16384)},
     }
     if tools:
         payload["tools"] = tools
@@ -84,6 +86,9 @@ def chat(messages: list, tools: list = None) -> dict:
     msg["content"] = _strip_think(msg.get("content", ""))
     calls = [tc.get("function", {}).get("name", "?")
              for tc in (msg.get("tool_calls") or [])]
+    # prompt_eval_count — сколько токенов промпта модель прожевала заново
+    # (без кэша — весь промпт, с кэшем — только хвост); eval_count — ответ
     lg.debug(f"llm {cfg['model']}: {len(messages)} сообщ. → "
-             f"{time.monotonic() - t0:.1f} с, tool_calls={calls or '—'}")
+             f"{time.monotonic() - t0:.1f} с, prompt={resp.get('prompt_eval_count', '?')} "
+             f"ток., ответ={resp.get('eval_count', '?')} ток., tool_calls={calls or '—'}")
     return msg
