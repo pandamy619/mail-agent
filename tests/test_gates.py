@@ -143,5 +143,28 @@ class TelegramGateTest(unittest.TestCase):
         self.assertIn("почтовый агент", bot.sent[0][1])
 
 
+class MarkReadGateTest(unittest.TestCase):
+    def setUp(self):
+        self._orig = core.mail_actions.mark_read_by_ids
+        self.calls = []
+        core.mail_actions.mark_read_by_ids = lambda acc, ids: self.calls.append(ids) or len(ids)
+
+    def tearDown(self):
+        core.mail_actions.mark_read_by_ids = self._orig
+        core._last_user_text = ""
+
+    def test_rejected_when_user_only_asked_to_show(self):
+        core._last_user_text = "покажи какие письма за последний день пришли"
+        res = json.loads(core.execute_tool("mark_read", {"account": "Google", "ids": [1, 2]}))
+        self.assertIn("error", res)
+        self.assertEqual(self.calls, [])
+
+    def test_allowed_on_explicit_request(self):
+        core._last_user_text = "пометь всё прочитанным"
+        res = json.loads(core.execute_tool("mark_read", {"account": "Google", "ids": [1, 2]}))
+        self.assertEqual(res.get("marked_read"), 2)
+        self.assertEqual(self.calls, [[1, 2]])
+
+
 if __name__ == "__main__":
     unittest.main()
