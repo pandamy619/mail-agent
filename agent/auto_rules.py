@@ -58,7 +58,8 @@ def parse_rule(text: str) -> dict:
     )
     msg = llm.chat([{"role": "system", "content": system},
                     {"role": "user", "content": text}],
-                   model=llm.proactive_model(), think=llm.proactive_think())
+                   model=llm.proactive_model(), think=llm.proactive_think(),
+                   num_gpu=llm.proactive_num_gpu())
     m = re.search(r"\{.*\}", msg.get("content", ""), re.S)
     if not m:
         raise ValueError("модель не смогла разобрать правило — сформулируй "
