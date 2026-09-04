@@ -5,7 +5,8 @@
 разово — вручную: python3 scripts/check_mail.py
 
 Что делает за один запуск:
-1. Смотрит новые письма во всех ящиках (по стабильным id, дважды не пингует).
+1. Смотрит новые письма во всех ящиках по UID-курсору: всё, что пришло
+   после последнего увиденного UID, сколько бы его ни было.
 2. Классифицирует их локальной моделью по критериям из importance.md.
 3. Важное шлёт пушем в Telegram; в тихие часы — откладывает до утра.
 4. В час дайджеста присылает сводку за период и обнуляет счётчики.
@@ -33,9 +34,7 @@ STATE_DIR = ROOT / "state"
 STATE_FILE = STATE_DIR / "proactive.json"
 LOCK_FILE = STATE_DIR / "lock"
 IMPORTANCE_FILE = ROOT / "data" / "importance.md"
-SEEN_CAP = 500      # сколько id помним на ящик
-WINDOW = 100        # окно свежих писем за проверку (по IMAP это дёшево;
-                    # 30 не хватало в плотный день — письма пропускались)
+NEW_CAP = 500       # новых писем за одну проверку (защита от лавины)
 
 
 # ── состояние ───────────────────────────────────────────────────────
@@ -53,7 +52,7 @@ def load_state(now):
             lg.warning("proactive: state повреждён — начинаю заново")
     # last_digest = сегодня: в день первой установки пустой дайджест не шлём,
     # первый придёт следующим утром
-    return {"seen": {}, "pending": [], "last_digest": now.date().isoformat(),
+    return {"cursor": {}, "pending": [], "last_digest": now.date().isoformat(),
             "stats": _fresh_stats(now)}
 
 
@@ -192,27 +191,32 @@ def fmt_important(items: list) -> str:
 # ── основная логика ─────────────────────────────────────────────────
 
 def collect_new(st) -> list:
+    """Новые письма по UID-курсору на ящик. Первый запуск и смена
+    UIDVALIDITY — базовая линия без пингов. Старое состояние со списком
+    «увиденных» id мигрирует: курсор = максимальный из них."""
     all_new = []
+    cursors = st.setdefault("cursor", {})
+    legacy = st.pop("seen", None) or {}
     for a in mail.accounts_info():
         acc = a["name"]
+        last = cursors.get(acc)
+        if last is None and legacy.get(acc):
+            last = max(int(i) for i in legacy[acc])
+            lg.info(f"proactive: {acc}: миграция состояния — курсор {last}")
         try:
-            rows = mail.scan(window=WINDOW, account=acc)
+            rows, newest, reset = mail.new_since(acc, last, cap=NEW_CAP)
         except mail.MailError as e:
             lg.warning(f"proactive: {acc}: {e}")
             continue
-        ids = [str(r["id"]) for r in rows]
-        seen = st["seen"].get(acc)
-        if seen is None:
-            st["seen"][acc] = ids[:SEEN_CAP]
-            lg.info(f"proactive: {acc}: первый запуск — базовая линия "
-                    f"({len(ids)} писем), пинги не шлём")
+        if last is None or reset:
+            cursors[acc] = newest
+            lg.info(f"proactive: {acc}: {'UIDVALIDITY сменился' if reset else 'первый запуск'}"
+                    f" — базовая линия (UID {newest}), пинги не шлём")
             continue
-        seen_set = set(seen)
-        new = [r for r in rows if str(r["id"]) not in seen_set]
-        st["seen"][acc] = (ids + [i for i in seen if i not in set(ids)])[:SEEN_CAP]
-        if new:
-            lg.info(f"proactive: {acc}: новых писем {len(new)}")
-        all_new.extend(new)
+        cursors[acc] = max(int(newest), int(last))
+        if rows:
+            lg.info(f"proactive: {acc}: новых писем {len(rows)}")
+        all_new.extend(rows)
     return all_new
 
 

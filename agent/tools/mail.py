@@ -111,23 +111,53 @@ def _finish_rows(rows: list, acc: str) -> list:
     return rows
 
 
-def _check_uidvalidity(sess: imap_client.Session, acc: str) -> None:
-    """UIDVALIDITY сменился — старые UID ничего не значат, индекс ящика сброс."""
+def _check_uidvalidity(sess: imap_client.Session, acc: str) -> bool:
+    """UIDVALIDITY сменился — старые UID ничего не значат, индекс ящика сброс.
+    Возвращает True, если смена произошла (курсоры по UID недействительны)."""
     try:
         uv = sess.uidvalidity("INBOX")
     except MailError as e:
         _log().debug(f"uidvalidity {acc}: {e}")
-        return
+        return False
     if not uv:
-        return
+        return False
     key = f"uidvalidity:{acc}"
     old = mail_index.meta_get(key)
-    if old and old != str(uv):
+    changed = bool(old) and old != str(uv)
+    if changed:
         _log().warning(f"index {acc}: UIDVALIDITY сменился {old} → {uv}, "
                        "индекс ящика сброшен")
         mail_index.clear_account(acc)
     if old != str(uv):
         mail_index.meta_set(key, str(uv))
+    return changed
+
+
+def new_since(account: str, last_uid, cap: int = 500) -> tuple:
+    """Письма «Входящих» с UID больше last_uid, новые первыми, не больше cap.
+    Возвращает (rows, newest_uid, reset). last_uid None — только базовая
+    линия (rows пустые, newest — текущий максимум). reset=True — сменился
+    UIDVALIDITY: старый курсор недействителен, newest — новая базовая линия.
+    В отличие от окна scan(), ничего не теряется при наплыве писем."""
+    acc = resolve_account(account)
+    sess = session(acc)
+    reset = _check_uidvalidity(sess, acc)
+    if last_uid is None or reset:
+        uids = sess.all_uids("INBOX")
+        return [], (uids[-1] if uids else 0), reset
+    last_uid = int(last_uid)
+    # «UID n:*» на сервере всегда включает письмо с максимальным UID,
+    # даже если он меньше n — фильтруем сами
+    uids = sorted(u for u in sess.search_uids(f"UID {last_uid + 1}:*")
+                  if u > last_uid)
+    if not uids:
+        return [], last_uid, False
+    rows = _finish_rows(sess.fetch_headers(uids[-int(cap):]), acc)
+    try:
+        mail_index.upsert(acc, rows)
+    except Exception as e:  # noqa: BLE001
+        _log().debug(f"index: upsert после new_since не удался: {e}")
+    return rows, uids[-1], False
 
 
 def scan(window: int = 25, account: str = None) -> list:

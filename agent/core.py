@@ -13,13 +13,17 @@ import re
 import time
 from datetime import datetime
 
-from . import auto_rules, llm, mail_index, rules
+from . import auto_rules, config, llm, mail_index, rules
 from .log import get as _log
 from .tools import mail, mail_actions
 
 MAX_STEPS = 8          # защита от зацикливания
 SHOW_CAP = 10          # больше 10 карточек за вызов модель не получает
-MAX_HISTORY = 40       # сколько последних сообщений держим в контексте
+MAX_HISTORY = 40       # верхняя граница числа сообщений в контексте
+CHARS_PER_TOKEN = 3    # грубая оценка для русского текста и JSON (замер 04.09:
+                       # 9,4 тыс. символов промпта ≈ 2,6 тыс. токенов, то есть
+                       # 3,6 — берём 3, чтобы ошибаться в безопасную сторону)
+ANSWER_RESERVE = 2000  # токенов под результаты инструментов и ответ текущего хода
 
 SYSTEM_PROMPT = """Ты — личный почтовый ассистент Влада, работаешь с его ящиками \
 по IMAP. Отвечай по-русски, кратко, простым текстом без markdown (никаких \
@@ -813,10 +817,53 @@ def new_history(default_account: str = None, accounts: list = None) -> list:
     return [_build_system()]
 
 
+def _est_tokens(msg: dict) -> int:
+    """Оценка размера сообщения в токенах (вместе с tool_calls)."""
+    return len(json.dumps(msg, ensure_ascii=False)) // CHARS_PER_TOKEN + 1
+
+
+def history_budget() -> int:
+    """Сколько токенов истории (без системного промпта и инструментов)
+    помещается в окно контекста llm.num_ctx с запасом на ответ."""
+    try:
+        num_ctx = int(config.load()["llm"].get("num_ctx") or 16384)
+    except Exception:  # noqa: BLE001
+        num_ctx = 16384
+    prefix = (_est_tokens(_build_system())
+              + len(json.dumps(TOOLS, ensure_ascii=False)) // CHARS_PER_TOKEN)
+    return max(2000, num_ctx - prefix - ANSWER_RESERVE)
+
+
 def _trim(history: list) -> list:
-    if len(history) <= MAX_HISTORY + 1:
+    """Системный промпт + хвост истории, который влезает в бюджет токенов
+    (и не длиннее MAX_HISTORY сообщений). Раньше резали только по числу
+    сообщений, и крупные результаты инструментов переполняли контекст —
+    Ollama молча обрезала начало вместе с системным промптом.
+    Текущий ход (от последнего сообщения пользователя) не режется никогда;
+    хвост не начинается с осиротевшего результата инструмента."""
+    tail = history[-MAX_HISTORY:] if len(history) > MAX_HISTORY + 1 else history[1:]
+    if not tail:
         return history
-    return [history[0]] + history[-MAX_HISTORY:]
+    last_user = max((i for i, m in enumerate(tail) if m.get("role") == "user"),
+                    default=0)
+    budget = history_budget()
+    total = sum(_est_tokens(m) for m in tail)
+    while last_user > 0 and total > budget:
+        total -= _est_tokens(tail.pop(0))
+        last_user -= 1
+    while last_user > 0 and tail[0].get("role") != "user":
+        tail.pop(0)
+        last_user -= 1
+    return [history[0]] + tail
+
+
+def warmup() -> float:
+    """Прогреть кэш промпта Ollama: один вызов с системным промптом
+    и инструментами (тот же префикс, что у реальных ходов). Возвращает
+    секунды. Вызывать после new_history()."""
+    t0 = time.monotonic()
+    llm.chat([_build_system(), {"role": "user", "content": "привет"}], tools=TOOLS)
+    return time.monotonic() - t0
 
 
 def run_turn(history: list, user_text: str, on_tool=None, on_progress=None) -> str:
