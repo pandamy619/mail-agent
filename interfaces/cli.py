@@ -113,6 +113,9 @@ def main():
             print(f"\n❌ Проблема с почтой: {e}")
             continue
         dt = time.monotonic() - t0
+        cats = core.turn_categories()
+        if cats:
+            print(f"\n{DIM}📂 {', '.join(cats)}{RESET}")
         print(f"\nагент: {plain(reply)}")
         print(f"{DIM}   ({dt:.1f} с){RESET}")
 

@@ -12,7 +12,7 @@
 """
 import time
 
-from .. import config, imap_client, mail_index
+from .. import config, imap_client, mail_index, providers
 from ..imap_client import MailError  # noqa: F401 — публичное имя инструментов
 from ..log import get as _log
 
@@ -96,6 +96,11 @@ def session(account: str) -> imap_client.Session:
     raise MailError(f"ящик «{account}» отсутствует в config.yaml")
 
 
+def provider(account: str) -> providers.Provider:
+    """Провайдер ящика (особенности сервиса: категории Gmail и т.п.)."""
+    return providers.for_account(session(account).account)
+
+
 # ── Карточки ────────────────────────────────────────────────────────
 
 def _age_str(sec: float) -> str:
@@ -103,10 +108,18 @@ def _age_str(sec: float) -> str:
 
 
 def _finish_rows(rows: list, acc: str) -> list:
-    """Дополнить карточки полями агента и упорядочить: свежие первыми."""
+    """Дополнить карточки полями агента (ящик, возраст, категория)
+    и упорядочить: свежие первыми."""
+    cats = {}
+    if rows:
+        try:
+            cats = provider(acc).categories(session(acc), [r["id"] for r in rows])
+        except MailError as e:
+            _log().debug(f"categories {acc}: {e}")
     for r in rows:
         r["account"] = acc
         r["age_str"] = _age_str(r.get("age_sec", 0))
+        r["category"] = cats.get(int(r["id"]), "")
     rows.sort(key=lambda r: (r.get("received") or 0, r["id"]), reverse=True)
     return rows
 
@@ -183,12 +196,17 @@ def list_recent(limit: int = 10, account: str = None) -> list:
     return scan(window=max(int(limit), 25), account=account)[: int(limit)]
 
 
-def list_unread(limit: int = 10, window: int = 100, account: str = None) -> list:
-    """Самые свежие непрочитанные письма ящика (window сохранён для
-    совместимости: по IMAP непрочитанные ищутся по всему ящику)."""
+def list_unread(limit: int = 10, window: int = 100, account: str = None,
+                category: str = None) -> list:
+    """Самые свежие непрочитанные письма ящика, при category — только этой
+    категории (window сохранён для совместимости: по IMAP непрочитанные
+    ищутся по всему ящику)."""
     acc = resolve_account(account)
     sess = session(acc)
     uids = sess.search_uids("UNSEEN")
+    if uids and category:
+        cats = provider(acc).categories(sess, uids)
+        uids = [u for u in uids if cats.get(u) == category]
     if not uids:
         return []
     rows = sess.fetch_headers(uids[-int(limit):])

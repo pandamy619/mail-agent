@@ -42,24 +42,34 @@ def index_account(acc: str, rebuild: bool = False) -> None:
     print(f"[{acc}] всего писем: {len(uids)}; в индексе {len(known)}; "
           f"докачать {len(todo)}")
     if not todo:
+        refresh_categories(acc, sess, uids)
         mail_index.meta_set(f"done:{acc}", time.strftime("%Y-%m-%d %H:%M"))
         return
     t0 = time.monotonic()
     added = 0
     for i in range(0, len(todo), CHUNK):
         part = todo[i:i + CHUNK]
-        rows = sess.fetch_headers(part)
-        for r in rows:
-            r["account"] = acc
+        rows = mail._finish_rows(sess.fetch_headers(part), acc)
         added += mail_index.upsert(acc, rows)
         done = min(i + CHUNK, len(todo))
         elapsed = time.monotonic() - t0
         eta = elapsed / done * (len(todo) - done)
         print(f"[{acc}] {done}/{len(todo)} ({done * 100 // len(todo)}%)  "
               f"осталось ~{eta / 60:.1f} мин")
+    refresh_categories(acc, sess, uids)
     mail_index.meta_set(f"done:{acc}", time.strftime("%Y-%m-%d %H:%M"))
     print(f"[{acc}] готово: добавлено {added} карточек "
           f"за {(time.monotonic() - t0) / 60:.1f} мин")
+
+
+def refresh_categories(acc: str, sess, uids: list) -> None:
+    """Категории для всех писем ящика (Gmail — четыре поиска), чтобы
+    фильтр по категории работал и по старым карточкам."""
+    prov = mail.provider(acc)
+    if not prov.has_categories or not uids:
+        return
+    n = mail_index.set_categories(acc, prov.categories(sess, uids))
+    print(f"[{acc}] категории проставлены: {n}")
 
 
 def main():

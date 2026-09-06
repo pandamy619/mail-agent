@@ -13,7 +13,7 @@ import re
 import time
 from datetime import datetime
 
-from . import auto_rules, config, llm, mail_index, rules
+from . import auto_rules, config, llm, mail_index, providers, rules
 from .log import get as _log
 from .tools import mail, mail_actions
 
@@ -40,9 +40,13 @@ SYSTEM_PROMPT = """Ты — личный почтовый ассистент В�
 к регистру, точкам и дефисам; при 0 результатов попробуй короче (одно слово) \
 и только потом отвечай «нет писем».
 - «Сколько / найди письма от X» — ответь числом total и одной фразой, без \
-списка. Список — только на «покажи»: строка на письмо, не больше 10, дальше \
-«показал 10 из N, показать ещё?» через offset. «Последнее письмо от X» — \
-первое из search_mail.
+списка. Список — только на «покажи» и «что непрочитанного»: строка на \
+письмо, не больше 10, дальше «показал 10 из N, показать ещё?» через offset. \
+НИКОГДА не пиши «показал письма», не выведя сам список. «Последнее письмо \
+от X» — первое из search_mail.
+- У писем Gmail есть category (Промоакции, Соцсети, Оповещения, \
+Несортированные) — называй её при показе письма; фильтр category в \
+search_mail и list_unread («без промо» — покажи остальные категории).
 - Письма адресуются id из результатов (в паре с account); id стабильны. \
 search_mail ищет по всей истории через индекс; если индекс не построен — \
 предложи python3 scripts/build_index.py.
@@ -70,6 +74,10 @@ error — передай пользователю. Если он говорит,
 _ACCOUNT_PARAM = {
     "type": "string",
     "description": "имя ящика из list_accounts",
+}
+_CATEGORY_PARAM = {
+    "type": "string",
+    "description": "категория Gmail: promotions, social, updates, primary",
 }
 
 TOOLS = [
@@ -108,6 +116,7 @@ TOOLS = [
                     "account": _ACCOUNT_PARAM,
                     "limit": {"type": "integer",
                               "description": "до 10"},
+                    "category": _CATEGORY_PARAM,
                 },
                 "required": ["account"],
             },
@@ -130,6 +139,7 @@ TOOLS = [
                               "description": "до 10"},
                     "offset": {"type": "integer",
                                "description": "сдвиг листания"},
+                    "category": _CATEGORY_PARAM,
                 },
                 "required": ["account"],
             },
@@ -356,12 +366,34 @@ TOOLS = [
 ]
 
 
+_turn_categories = []   # подписи категорий писем, показанных за текущий ход
+
+
+def _card(m: dict) -> dict:
+    card = {"id": int(m["id"]), "age": m.get("age_str", ""),
+            "unread": m.get("unread"), "sender": m["sender"],
+            "subject": m["subject"]}
+    if m.get("category"):
+        card["category"] = providers.label(m["category"])
+        if card["category"] not in _turn_categories:
+            _turn_categories.append(card["category"])
+    return card
+
+
+def turn_categories() -> list:
+    """Категории писем, показанных за текущий ход (интерфейсы выводят
+    их первой строкой ответа)."""
+    return list(_turn_categories)
+
+
 def _fmt_list(rows: list) -> str:
-    out = [{
-        "id": int(m["id"]), "age": m["age_str"], "unread": m["unread"],
-        "sender": m["sender"], "subject": m["subject"],
-    } for m in rows]
+    out = [_card(m) for m in rows]
     return json.dumps({"count": len(out), "messages": out}, ensure_ascii=False)
+
+
+def _category(args: dict):
+    v = str((args or {}).get("category") or "").strip().lower()
+    return v if v in providers.LABELS else None
 
 
 def _clamp(value, default, max_value=SHOW_CAP) -> int:
@@ -608,7 +640,8 @@ def execute_tool(name: str, args: dict) -> str:
                                           account=acc))
     if name == "list_unread":
         return _fmt_list(mail.list_unread(limit=_clamp(args.get("limit"), 10),
-                                          account=acc))
+                                          account=acc,
+                                          category=_category(args)))
     if name == "search_mail":
         snd = (args.get("sender_contains") or "").strip()
         sub = (args.get("subject_contains") or "").strip()
@@ -627,10 +660,9 @@ def execute_tool(name: str, args: dict) -> str:
                                     subject_contains=sub or None,
                                     account=canon,
                                     limit=_clamp(args.get("limit"), 5),
-                                    offset=max(0, int(args.get("offset") or 0)))
-            out = [{"id": r["id"], "age": r["age_str"], "unread": r["unread"],
-                    "sender": r["sender"], "subject": r["subject"]}
-                   for r in res["rows"]]
+                                    offset=max(0, int(args.get("offset") or 0)),
+                                    category=_category(args))
+            out = [_card(r) for r in res["rows"]]
             payload = {"total": res["total"], "shown": len(out),
                        "messages": out}
             if res["total"] == 0:
@@ -643,6 +675,8 @@ def execute_tool(name: str, args: dict) -> str:
                            subject_contains=sub or None,
                            limit=_clamp(args.get("limit"), 5),
                            account=canon)
+        if _category(args):
+            rows = [r for r in rows if r.get("category") == _category(args)]
         payload = json.loads(_fmt_list(rows))
         payload["note"] = ("индекс не построен — искал только среди последних "
                            "~100 писем; полный поиск по всей истории появится "
@@ -651,9 +685,15 @@ def execute_tool(name: str, args: dict) -> str:
     if name == "read_mail":
         if "id" not in args:
             return json.dumps({"error": "нужен id письма"}, ensure_ascii=False)
-        body = mail.get_body_by_id(int(args["id"]), account=acc, max_chars=1500)
-        return json.dumps({"id": int(args["id"]), "body": body.strip()},
-                          ensure_ascii=False)
+        canon = mail.resolve_account(acc)
+        body = mail.get_body_by_id(int(args["id"]), account=canon, max_chars=1500)
+        payload = {"id": int(args["id"]), "body": body.strip()}
+        info = mail_index.get_by_ids(canon, [int(args["id"])]).get(int(args["id"]))
+        if info and info.get("category"):
+            payload["category"] = providers.label(info["category"])
+            if payload["category"] not in _turn_categories:
+                _turn_categories.append(payload["category"])
+        return json.dumps(payload, ensure_ascii=False)
     if name == "mark_read":
         if not re.search(r"прочит|прочт", _last_user_text or "", re.IGNORECASE):
             _log().warning(f"mark_read ОТКЛОНЁН кодом: пользователь не просил "
@@ -873,6 +913,7 @@ def run_turn(history: list, user_text: str, on_tool=None, on_progress=None) -> s
     except Exception as e:  # noqa: BLE001
         lg.debug(f"rules: не удалось обновить промпт: {e}")
     mail.progress_hook = on_progress
+    _turn_categories.clear()
     try:
         return _run_turn_inner(history, on_tool)
     finally:

@@ -190,7 +190,9 @@ class Bot:
             reply = f"Проблема с почтой: {e}"
         status.finish()
         markup = CONFIRM_KB if core.has_pending() else None
-        self.send(chat_id, core.plain(reply) + self._footer(used), markup)
+        cats = core.turn_categories()
+        head = ("📂 " + ", ".join(cats) + "\n\n") if cats else ""
+        self.send(chat_id, head + core.plain(reply) + self._footer(used), markup)
 
     def _allowed(self, uid, chat_id, what: str) -> bool:
         """Команда принимается только от владельца и только в личном чате
