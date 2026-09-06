@@ -442,9 +442,12 @@ class Session:
         rows.sort(key=lambda r: r["id"], reverse=True)
         return rows
 
-    def fetch_body(self, uid: int, folder: str = "INBOX") -> bytes:
+    def fetch_body(self, uid: int, folder: str = "INBOX",
+                   max_bytes: int = 0) -> bytes:
+        """RFC822 письма; max_bytes > 0 — только начало (для превью)."""
         self.select(folder, readonly=True)
-        data = self.uid("FETCH", str(int(uid)), "(BODY.PEEK[])",
+        item = f"(BODY.PEEK[]<0.{int(max_bytes)}>)" if max_bytes else "(BODY.PEEK[])"
+        data = self.uid("FETCH", str(int(uid)), item,
                         label=f"fetch body {uid}")
         for meta, payload in group_fetch(data):
             if payload:

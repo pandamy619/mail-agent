@@ -137,5 +137,14 @@ class HelpersTest(unittest.TestCase):
         self.assertEqual(len(ic.extract_text(raw, max_chars=10)), 10)
 
 
+class PreviewCleanTest(unittest.TestCase):
+    def test_invisible_padding_removed(self):
+        from agent.tools import mail
+        raw = ("Напольная лампа \u200c \u200c \u200c \u034f\u00ad \u200b\ufeff скидка"
+               .encode("utf-8"))
+        text = mail._INVISIBLE.sub(" ", raw.decode("utf-8"))
+        self.assertEqual(" ".join(text.split()), "Напольная лампа скидка")
+
+
 if __name__ == "__main__":
     unittest.main()

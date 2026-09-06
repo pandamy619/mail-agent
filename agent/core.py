@@ -39,14 +39,14 @@ SYSTEM_PROMPT = """Ты — личный почтовый ассистент В�
 - Отправителей ищи латиницей («гитлаб» → gitlab). Поиск не чувствителен \
 к регистру, точкам и дефисам; при 0 результатов попробуй короче (одно слово) \
 и только потом отвечай «нет писем».
-- «Сколько / найди письма от X» — ответь числом total и одной фразой, без \
-списка. Список — только на «покажи» и «что непрочитанного»: строка на \
-письмо, не больше 10, дальше «показал 10 из N, показать ещё?» через offset. \
-НИКОГДА не пиши «показал письма», не выведя сам список. «Последнее письмо \
-от X» — первое из search_mail.
+- Списки писем интерфейс выводит САМ из результатов инструментов — не \
+перечисляй письма в ответе. Ответ на «покажи / что непрочитанного» — одна \
+фраза: сколько показано из total и что заметного; если писем больше 10, \
+предложи показать ещё (offset). На «сколько / найди письма от X» — число \
+total и одна фраза. «Последнее письмо от X» — первое из search_mail.
 - У писем Gmail есть category (Промоакции, Соцсети, Оповещения, \
-Несортированные) — называй её при показе письма; фильтр category в \
-search_mail и list_unread («без промо» — покажи остальные категории).
+Несортированные). Фильтр category в search_mail и list_unread передавай \
+ТОЛЬКО если пользователь назвал категорию; иначе не передавай.
 - Письма адресуются id из результатов (в паре с account); id стабильны. \
 search_mail ищет по всей истории через индекс; если индекс не построен — \
 предложи python3 scripts/build_index.py.
@@ -366,24 +366,45 @@ TOOLS = [
 ]
 
 
-_turn_categories = []   # подписи категорий писем, показанных за текущий ход
+_turn_cards = []   # карточки писем, показанных за текущий ход (рисует интерфейс)
 
 
 def _card(m: dict) -> dict:
-    card = {"id": int(m["id"]), "age": m.get("age_str", ""),
-            "unread": m.get("unread"), "sender": m["sender"],
-            "subject": m["subject"]}
+    """Карточка для модели; параллельно копится полная карточка хода
+    со сквозным номером n — интерфейс рисует список сам."""
+    mid = int(m["id"])
+    acc = m.get("account") or ""
+    for c in _turn_cards:
+        if c["id"] == mid and c["account"] == acc:
+            n = c["n"]
+            break
+    else:
+        n = len(_turn_cards) + 1
+        _turn_cards.append({
+            "n": n, "id": mid, "account": acc, "sender": m.get("sender", ""),
+            "subject": m.get("subject", ""), "received": m.get("received"),
+            "age_str": m.get("age_str", ""), "unread": bool(m.get("unread")),
+            "category": providers.label(m["category"]) if m.get("category") else "",
+        })
+    card = {"n": n, "id": mid, "age": m.get("age_str", ""),
+            "unread": m.get("unread"), "sender": m.get("sender", ""),
+            "subject": m.get("subject", "")}
     if m.get("category"):
         card["category"] = providers.label(m["category"])
-        if card["category"] not in _turn_categories:
-            _turn_categories.append(card["category"])
     return card
 
 
+def turn_cards() -> list:
+    """Карточки писем, показанных за текущий ход, в порядке номеров."""
+    return [dict(c) for c in _turn_cards]
+
+
 def turn_categories() -> list:
-    """Категории писем, показанных за текущий ход (интерфейсы выводят
-    их первой строкой ответа)."""
-    return list(_turn_categories)
+    out = []
+    for c in _turn_cards:
+        if c["category"] and c["category"] not in out:
+            out.append(c["category"])
+    return out
 
 
 def _fmt_list(rows: list) -> str:
@@ -691,8 +712,6 @@ def execute_tool(name: str, args: dict) -> str:
         info = mail_index.get_by_ids(canon, [int(args["id"])]).get(int(args["id"]))
         if info and info.get("category"):
             payload["category"] = providers.label(info["category"])
-            if payload["category"] not in _turn_categories:
-                _turn_categories.append(payload["category"])
         return json.dumps(payload, ensure_ascii=False)
     if name == "mark_read":
         if not re.search(r"прочит|прочт", _last_user_text or "", re.IGNORECASE):
@@ -913,7 +932,7 @@ def run_turn(history: list, user_text: str, on_tool=None, on_progress=None) -> s
     except Exception as e:  # noqa: BLE001
         lg.debug(f"rules: не удалось обновить промпт: {e}")
     mail.progress_hook = on_progress
-    _turn_categories.clear()
+    _turn_cards.clear()
     try:
         return _run_turn_inner(history, on_tool)
     finally:

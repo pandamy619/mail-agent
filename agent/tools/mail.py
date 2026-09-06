@@ -10,6 +10,7 @@
 - Пользовательские строки на сервер не уходят: фильтры поиска работают
   в Python по индексу либо по свежему срезу заголовков.
 """
+import re
 import time
 
 from .. import config, imap_client, mail_index, providers
@@ -262,6 +263,30 @@ def get_body_by_id(mid: int, account: str = None, max_chars: int = 1500) -> str:
     acc = resolve_account(account)
     raw = session(acc).fetch_body(int(mid))
     return imap_client.extract_text(raw, max_chars=int(max_chars))
+
+
+PREVIEW_BYTES = 32000
+# невидимые символы, которыми рассылки набивают «прехедер» письма
+_INVISIBLE = re.compile("[\u200b-\u200f\u2060\ufeff\u00ad\u034f\u2800]+")
+
+
+def preview(mid: int, account: str, max_chars: int = 150) -> str:
+    """Начало текста письма по началу его RFC822 (одна строка)."""
+    acc = resolve_account(account)
+    raw = session(acc).fetch_body(int(mid), max_bytes=PREVIEW_BYTES)
+    text = imap_client.extract_text(raw, max_chars=max_chars * 6)
+    text = " ".join(_INVISIBLE.sub(" ", text).split())
+    return text if len(text) <= max_chars else text[: max_chars - 1] + "…"
+
+
+def add_previews(cards: list, limit: int = 10, max_chars: int = 150) -> list:
+    """Добавить preview первым limit карточкам; ошибки чтения — без превью."""
+    for c in cards[:limit]:
+        try:
+            c["preview"] = preview(c["id"], c["account"], max_chars=max_chars)
+        except (MailError, config.ConfigError) as e:
+            _log().debug(f"preview {c.get('account')}/{c.get('id')}: {e}")
+    return cards
 
 
 def get_message(mid: int, account: str = None):

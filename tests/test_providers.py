@@ -105,7 +105,7 @@ class IndexCategoryTest(unittest.TestCase):
 
 class CardCategoryTest(unittest.TestCase):
     def test_fmt_list_adds_label_and_tracks_turn(self):
-        core._turn_categories.clear()
+        core._turn_cards.clear()
         out = core._fmt_list([{"id": 1, "age_str": "1 мин назад", "unread": True,
                                "sender": "a", "subject": "b", "category": "social"},
                               {"id": 2, "age_str": "2 мин назад", "unread": False,
