@@ -293,8 +293,7 @@ def reply_draft(account: str, mid: int, body: str = "") -> str:
     reply_to = orig.get("Reply-To") or orig.get("From") or ""
     if not parseaddr(reply_to)[1]:
         raise MailError("в письме нет адреса отправителя — некому отвечать")
-    # Reply-To задаёт отправитель письма; если он отличается от From —
-    # это может быть подмена адреса ответа, пользователь должен это увидеть
+    # Reply-To, отличный от From, может быть подменой адреса ответа
     from_addr = parseaddr(orig.get("From") or "")[1].lower()
     to_addr = parseaddr(reply_to)[1].lower()
     note = ""

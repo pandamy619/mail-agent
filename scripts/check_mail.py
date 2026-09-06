@@ -89,7 +89,6 @@ def in_quiet(now_t, rng):
 # ── telegram ────────────────────────────────────────────────────────
 
 def tg_send(text: str, markup: dict = None) -> bool:
-    # env_get: переменная окружения (Docker) приоритетнее .env
     token = config.env_get("TELEGRAM_BOT_TOKEN")
     chat = config.env_get("TELEGRAM_USER_ID")
     if not token or not chat.lstrip("-").isdigit():
@@ -112,9 +111,8 @@ def tg_send(text: str, markup: dict = None) -> bool:
 
 
 def cleanup_kb(day: str) -> dict:
-    """Кнопки вечернего вопроса. В callback_data зашита дата: бот исполняет
-    очистку только в день вопроса и только один раз (ревью 04.09: после
-    рестарта Telegram переотправляет необработанные нажатия)."""
+    """Кнопки вечернего вопроса; дата в callback_data — бот исполняет
+    очистку только в день вопроса и только один раз."""
     return {"inline_keyboard": [[{"text": "✅ Да, очистить",
                                   "callback_data": f"cleanup_yes:{day}"},
                                  {"text": "❌ Нет",
