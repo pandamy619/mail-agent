@@ -20,7 +20,9 @@ Telegram-интерфейс почтового агента (этап 4). Без
 Запуск:
     python3 interfaces/telegram_bot.py
 """
+import html
 import json
+import re
 import signal
 import sys
 import threading
@@ -31,7 +33,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from agent import config, core, llm  # noqa: E402
+from agent import config, core, llm, render  # noqa: E402
 from agent import log as agent_log  # noqa: E402
 from agent.tools import mail, mail_actions  # noqa: E402
 
@@ -146,6 +148,22 @@ class Bot:
                 payload["reply_markup"] = markup
             self.api("sendMessage", http_timeout=30, **payload)
 
+    def send_html(self, chat_id, parts: list, markup=None):
+        """Части с HTML-разметкой, упакованные в сообщения; если Telegram
+        разметку отверг — те же части без тегов."""
+        chunks = render.pack(parts)
+        for i, chunk in enumerate(chunks):
+            payload = {"chat_id": chat_id, "text": chunk, "parse_mode": "HTML"}
+            if markup and i == len(chunks) - 1:
+                payload["reply_markup"] = markup
+            try:
+                self.api("sendMessage", http_timeout=30, **payload)
+            except RuntimeError as e:
+                lg.warning(f"telegram: HTML отвергнут ({str(e)[:80]}) — шлю текстом")
+                payload.pop("parse_mode")
+                payload["text"] = html.unescape(re.sub(r"<[^>]+>", "", chunk))
+                self.api("sendMessage", http_timeout=30, **payload)
+
     # ── логика ──────────────────────────────────────────────────────
     def _footer(self, used_accounts: list) -> str:
         """Строка «📮 Ящик (адрес)» по фактическим вызовам инструментов."""
@@ -190,9 +208,19 @@ class Bot:
             reply = f"Проблема с почтой: {e}"
         status.finish()
         markup = CONFIRM_KB if core.has_pending() else None
-        cats = core.turn_categories()
-        head = ("📂 " + ", ".join(cats) + "\n\n") if cats else ""
-        self.send(chat_id, head + core.plain(reply) + self._footer(used), markup)
+        cards = core.turn_cards()
+        if not cards:
+            self.send(chat_id, core.plain(reply) + self._footer(used), markup)
+            return
+        try:
+            mail.add_previews(cards)
+        except Exception as e:  # noqa: BLE001 — превью не должно ломать ответ
+            lg.debug(f"telegram: превью не получены: {e}")
+        parts = [html.escape(core.plain(reply))] + render.cards_html(cards)
+        footer = self._footer(used).strip()
+        if footer:
+            parts.append(html.escape(footer))
+        self.send_html(chat_id, parts, markup)
 
     def _allowed(self, uid, chat_id, what: str) -> bool:
         """Команда принимается только от владельца и только в личном чате

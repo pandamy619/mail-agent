@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from agent import config, core, llm  # noqa: E402
+from agent import config, core, llm, render  # noqa: E402
 from agent import log as agent_log  # noqa: E402
 from agent.tools import mail  # noqa: E402
 
@@ -113,9 +113,13 @@ def main():
             print(f"\n❌ Проблема с почтой: {e}")
             continue
         dt = time.monotonic() - t0
-        cats = core.turn_categories()
-        if cats:
-            print(f"\n{DIM}📂 {', '.join(cats)}{RESET}")
+        cards = core.turn_cards()
+        if cards:
+            try:
+                mail.add_previews(cards)
+            except Exception:  # noqa: BLE001
+                pass
+            print("\n" + render.cards_text(cards))
         print(f"\nагент: {plain(reply)}")
         print(f"{DIM}   ({dt:.1f} с){RESET}")
 
