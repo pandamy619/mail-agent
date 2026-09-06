@@ -40,6 +40,9 @@ services:
       <<: *agent-env
       LOG_FILE_NAME: agent-bot.log
     command: ["python3", "interfaces/telegram_bot.py"]
+    # при остановке/пересборке бот дописывает текущий ответ (вызов модели —
+    # до минуты-двух), а не гибнет на середине; в простое выходит сразу
+    stop_grace_period: 180s
 
   checker:
     <<: *agent

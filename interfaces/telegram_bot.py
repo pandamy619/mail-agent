@@ -21,6 +21,7 @@ Telegram-интерфейс почтового агента (этап 4). Без
     python3 interfaces/telegram_bot.py
 """
 import json
+import signal
 import sys
 import threading
 import time
@@ -37,7 +38,7 @@ from agent.tools import mail, mail_actions  # noqa: E402
 lg = agent_log.get()
 
 STATE_DIR = Path(__file__).resolve().parents[1] / "state"
-OFFSET_FILE = STATE_DIR / "telegram_offset"     # последний обработанный update_id + 1
+OFFSET_FILE = STATE_DIR / "telegram_offset"     # последний ОБРАБОТАННЫЙ update_id + 1
 CLEANUP_DONE_FILE = STATE_DIR / "cleanup_done.json"
 
 
@@ -113,6 +114,8 @@ class Bot:
         self.accounts = accounts or []
         self.history = core.new_history(default_account=default_account,
                                         accounts=self.accounts)
+        self._busy = False     # идёт обработка апдейта (ответ модели)
+        self._stop = False     # получен SIGTERM — завершиться после текущего
 
     # ── транспорт ───────────────────────────────────────────────────
     def api(self, method: str, http_timeout: int = 65, **params):
@@ -292,14 +295,27 @@ class Bot:
             answer = "да" if data == "yes" else "нет"
             self.run_agent(chat_id, answer)
 
+    def _on_term(self, signum, frame):
+        """SIGTERM (docker stop / пересборка): если сейчас идёт ответ —
+        дать ему завершиться и выйти после него, иначе выйти сразу."""
+        self._stop = True
+        lg.info("telegram: получен SIGTERM — "
+                + ("завершаю текущий ответ" if self._busy else "выхожу"))
+        if not self._busy:
+            raise SystemExit(0)
+
     def loop(self):
-        # смещение переживает рестарт: иначе Telegram переотправит апдейты,
-        # обработанные до падения (в том числе нажатые кнопки)
+        # Смещение переживает рестарт и записывается ПОСЛЕ обработки апдейта
+        # (инцидент 06.09: смещение записали до ответа, контейнер пересобрали
+        # на середине — сообщение пропало навсегда). Если процесс умрёт на
+        # середине, Telegram отдаст апдейт снова; повтор безопасен: очистка
+        # корзин идемпотентна по дате, «да» без заявки — просто «заявок нет».
         try:
             offset = int(OFFSET_FILE.read_text(encoding="utf-8").strip() or 0)
         except (OSError, ValueError):
             offset = 0
-        while True:
+        signal.signal(signal.SIGTERM, self._on_term)
+        while not self._stop:
             try:
                 updates = self.api("getUpdates", http_timeout=65,
                                    offset=offset, timeout=50)
@@ -309,15 +325,21 @@ class Bot:
                 continue
             for u in updates:
                 offset = u["update_id"] + 1
+                self._busy = True
+                try:
+                    self.handle(u)
+                except Exception as e:  # noqa: BLE001 — бот не должен падать
+                    lg.error(f"telegram: ошибка обработки: {e}")
+                finally:
+                    self._busy = False
                 try:
                     OFFSET_FILE.parent.mkdir(exist_ok=True)
                     OFFSET_FILE.write_text(str(offset), encoding="utf-8")
                 except OSError as e:
                     lg.warning(f"telegram: не записал смещение: {e}")
-                try:
-                    self.handle(u)
-                except Exception as e:  # noqa: BLE001 — бот не должен падать
-                    lg.error(f"telegram: ошибка обработки: {e}")
+                if self._stop:
+                    lg.info("telegram: ответ завершён, выхожу по SIGTERM")
+                    return
 
 
 def main():
