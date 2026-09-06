@@ -49,6 +49,7 @@ def _conn() -> sqlite3.Connection:
         sender_l TEXT, subject_l TEXT,
         sender_n TEXT, subject_n TEXT,
         received REAL, unread INTEGER,
+        category TEXT,
         PRIMARY KEY (account, mid))""")
     con.execute("""CREATE INDEX IF NOT EXISTS ix_recv
                    ON messages(account, received DESC)""")
@@ -67,6 +68,9 @@ def _conn() -> sqlite3.Connection:
             [(_norm(s), _norm(sub), a, m) for a, m, s, sub in rows])
         con.commit()
         _log().info(f"index: миграция нормализации — {len(rows)} карточек")
+    if "category" not in cols:
+        con.execute("ALTER TABLE messages ADD COLUMN category TEXT")
+        con.commit()
     return con
 
 
@@ -87,19 +91,21 @@ def upsert(account: str, rows: list, scan_time: float = None) -> int:
                      sender.lower(), subject.lower(),
                      _norm(sender), _norm(subject),
                      scan_time - float(r.get("age_sec", 0)),
-                     1 if r.get("unread") else 0))
+                     1 if r.get("unread") else 0,
+                     r.get("category") or ""))
     if not data:
         return 0
     con = _conn()
     con.executemany("""INSERT INTO messages
         (account, mid, sender, subject, sender_l, subject_l,
-         sender_n, subject_n, received, unread)
-        VALUES(?,?,?,?,?,?,?,?,?,?)
+         sender_n, subject_n, received, unread, category)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(account, mid) DO UPDATE SET
         sender=excluded.sender, subject=excluded.subject,
         sender_l=excluded.sender_l, subject_l=excluded.subject_l,
         sender_n=excluded.sender_n, subject_n=excluded.subject_n,
-        received=excluded.received, unread=excluded.unread""", data)
+        received=excluded.received, unread=excluded.unread,
+        category=excluded.category""", data)
     con.commit()
     con.close()
     return len(data)
@@ -122,7 +128,7 @@ def _add_text_filter(where: list, params: list, field: str, value) -> None:
 
 def search(sender_contains: str = None, subject_contains: str = None,
            account: str = None, unread_only: bool = False,
-           limit: int = 15, offset: int = 0) -> dict:
+           limit: int = 15, offset: int = 0, category: str = None) -> dict:
     """Мгновенный поиск по всей истории. Возвращает {"total": N, "rows": [...]}."""
     where, params = [], []
     if account:
@@ -132,30 +138,36 @@ def search(sender_contains: str = None, subject_contains: str = None,
     _add_text_filter(where, params, "subject", subject_contains)
     if unread_only:
         where.append("unread = 1")
+    if category:
+        where.append("category = ?")
+        params.append(category)
     w = ("WHERE " + " AND ".join(where)) if where else ""
     con = _conn()
     total = con.execute(f"SELECT COUNT(*) FROM messages {w}", params).fetchone()[0]  # noqa: S608
     cur = con.execute(
-        f"SELECT account, mid, sender, subject, received, unread "  # noqa: S608
+        f"SELECT account, mid, sender, subject, received, unread, category "  # noqa: S608
         f"FROM messages {w} ORDER BY received DESC LIMIT ? OFFSET ?",
         params + [int(limit), int(offset)])
     now = time.time()
     rows = [{"account": a, "id": m, "sender": s or "", "subject": sub or "",
-             "received": rcv, "unread": bool(u),
+             "received": rcv, "unread": bool(u), "category": cat or "",
              "age_str": _age_str(now - (rcv or now))}
-            for a, m, s, sub, rcv, u in cur.fetchall()]
+            for a, m, s, sub, rcv, u, cat in cur.fetchall()]
     con.close()
     return {"total": total, "rows": rows}
 
 
 def search_ids(account: str, sender_contains: str = None,
                subject_contains: str = None, cap: int = 10000,
-               older_days: int = 0) -> list:
+               older_days: int = 0, category: str = None) -> list:
     """ВСЕ id писем ящика по фильтру (свежие первыми) — для массовых заявок
     и оценки объёма авто-уборки. older_days > 0 — только старше N дней."""
     where, params = ["account = ?"], [account]
     _add_text_filter(where, params, "sender", sender_contains)
     _add_text_filter(where, params, "subject", subject_contains)
+    if category:
+        where.append("category = ?")
+        params.append(category)
     if older_days and int(older_days) > 0:
         where.append("received < ?")
         params.append(time.time() - int(older_days) * 86400)
@@ -175,11 +187,11 @@ def get_by_ids(account: str, ids: list) -> dict:
     con = _conn()
     marks = ",".join("?" for _ in ids)
     cur = con.execute(
-        f"SELECT mid, sender, subject FROM messages "  # noqa: S608
+        f"SELECT mid, sender, subject, category FROM messages "  # noqa: S608
         f"WHERE account = ? AND mid IN ({marks})",
         [account] + [int(i) for i in ids])
-    out = {m: {"sender": s or "", "subject": sub or ""}
-           for m, s, sub in cur.fetchall()}
+    out = {m: {"sender": s or "", "subject": sub or "", "category": cat or ""}
+           for m, s, sub, cat in cur.fetchall()}
     con.close()
     return out
 
@@ -212,6 +224,20 @@ def delete_ids(account: str, ids: list) -> int:
     cur = con.execute(
         f"DELETE FROM messages WHERE account = ? AND mid IN ({marks})",  # noqa: S608
         [account] + [int(i) for i in ids])
+    con.commit()
+    n = cur.rowcount
+    con.close()
+    return n
+
+
+def set_categories(account: str, cats: dict) -> int:
+    """Проставить категории уже известным карточкам: {mid: ключ}."""
+    if not cats:
+        return 0
+    con = _conn()
+    cur = con.executemany(
+        "UPDATE messages SET category = ? WHERE account = ? AND mid = ?",
+        [(c, account, int(m)) for m, c in cats.items()])
     con.commit()
     n = cur.rowcount
     con.close()
