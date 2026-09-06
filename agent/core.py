@@ -812,6 +812,10 @@ def _build_system() -> dict:
 
 
 def new_history(default_account: str = None, accounts: list = None) -> list:
+    if not default_account and accounts and len(accounts) == 1:
+        # единственный настроенный ящик — уточнять нечего (06.09: бот
+        # переспрашивал «в каком ящике?», когда ящик один)
+        default_account = accounts[0]["name"]
     _prompt_ctx["default_account"] = default_account
     _prompt_ctx["accounts"] = accounts
     return [_build_system()]

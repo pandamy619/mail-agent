@@ -61,6 +61,24 @@ class HistoryBudgetTest(unittest.TestCase):
         self.assertEqual(t[1]["role"], "user")
 
 
+class SingleAccountDefaultTest(unittest.TestCase):
+    def test_single_account_becomes_default(self):
+        h = core.new_history(default_account=None,
+                             accounts=[{"name": "Google", "email": "x"}])
+        self.assertIn("Ящик по умолчанию: Google", h[0]["content"])
+
+    def test_several_accounts_still_ask(self):
+        h = core.new_history(default_account=None,
+                             accounts=[{"name": "Google", "email": "x"},
+                                       {"name": "Yandex", "email": "y"}])
+        self.assertIn("СНАЧАЛА спроси", h[0]["content"])
+
+    def test_explicit_default_wins(self):
+        h = core.new_history(default_account="Yandex",
+                             accounts=[{"name": "Google", "email": "x"}])
+        self.assertIn("Ящик по умолчанию: Yandex", h[0]["content"])
+
+
 class CursorTest(unittest.TestCase):
     def setUp(self):
         self._accs = check_mail.mail.accounts_info
