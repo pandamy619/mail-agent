@@ -166,5 +166,67 @@ class MarkReadGateTest(unittest.TestCase):
         self.assertEqual(self.calls, [[1, 2]])
 
 
+class OffsetOrderTest(unittest.TestCase):
+    """Смещение getUpdates пишется ПОСЛЕ обработки апдейта (инцидент 06.09)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self._off = telegram_bot.OFFSET_FILE
+        telegram_bot.OFFSET_FILE = Path(self.tmp.name) / "telegram_offset"
+
+    def tearDown(self):
+        telegram_bot.OFFSET_FILE = self._off
+        self.tmp.cleanup()
+
+    def test_offset_written_after_handle(self):
+        seen = []
+
+        class Stop(Exception):
+            pass
+
+        class B(_FakeBot):
+            def api(self, method, http_timeout=65, **params):
+                if method == "getUpdates":
+                    if seen:
+                        raise Stop()
+                    return [{"update_id": 41, "message": {"from": {"id": 1},
+                             "chat": {"id": 1, "type": "private"}, "text": "/start"}}]
+                return {}
+
+            def handle(self, update):
+                seen.append(telegram_bot.OFFSET_FILE.exists())  # ещё не записано
+                super().handle(update)
+
+        bot = B(my_id=1)
+        with self.assertRaises(Stop):
+            bot.loop()
+        self.assertEqual(seen, [False])
+        self.assertEqual(telegram_bot.OFFSET_FILE.read_text(), "42")
+
+    def test_offset_written_even_if_handler_fails(self):
+        class Stop(Exception):
+            pass
+
+        class B(_FakeBot):
+            n = 0
+
+            def api(self, method, http_timeout=65, **params):
+                if method == "getUpdates":
+                    self.n += 1
+                    if self.n > 1:
+                        raise Stop()
+                    return [{"update_id": 7, "message": {"from": {"id": 1},
+                             "chat": {"id": 1, "type": "private"}, "text": "x"}}]
+                return {}
+
+            def run_agent(self, chat_id, text):
+                raise ValueError("сломался")
+
+        bot = B(my_id=1)
+        with self.assertRaises(Stop):
+            bot.loop()
+        self.assertEqual(telegram_bot.OFFSET_FILE.read_text(), "8")
+
+
 if __name__ == "__main__":
     unittest.main()
