@@ -279,6 +279,11 @@ def preview(mid: int, account: str, max_chars: int = 150) -> str:
     return text if len(text) <= max_chars else text[: max_chars - 1] + "…"
 
 
+def unseen_ids(account: str) -> set:
+    """UID непрочитанных писем «Входящих» ящика."""
+    return set(session(resolve_account(account)).search_uids("UNSEEN"))
+
+
 def add_previews(cards: list, limit: int = 10, max_chars: int = 150) -> list:
     """Добавить preview первым limit карточкам; ошибки чтения — без превью."""
     for c in cards[:limit]:

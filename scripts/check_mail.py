@@ -13,9 +13,12 @@
 
 ТОЛЬКО ЧТЕНИЕ почты. Первый запуск создаёт базовую линию и ничего не шлёт.
 """
+import html
 import json
+import re
 import sys
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime
 from datetime import time as dtime
@@ -23,7 +26,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from agent import auto_rules, classifier, config, llm, mail_index  # noqa: E402
+from agent import auto_rules, classifier, config, llm, mail_index, providers, render  # noqa: E402
 from agent import rules as agent_rules  # noqa: E402
 from agent.log import get as get_log  # noqa: E402
 from agent.tools import mail, mail_actions  # noqa: E402
@@ -39,9 +42,29 @@ NEW_CAP = 500       # новых писем за одну проверку (за
 
 # ── состояние ───────────────────────────────────────────────────────
 
+CARD_KEYS = ("account", "id", "sender", "subject", "received", "category", "reason")
+CARDS_CAP = 500     # карточек за период храним в состоянии (для дайджеста)
+
+
 def _fresh_stats(now):
-    return {"new": 0, "per_account": {}, "important": [],
+    return {"new": 0, "per_account": {}, "important": [], "cards": [],
             "since": now.isoformat(timespec="minutes")}
+
+
+def _slim(row: dict) -> dict:
+    return {k: row.get(k, "") for k in CARD_KEYS if row.get(k) not in (None, "")}
+
+
+def accumulate(stt: dict, new_rows: list, important: list) -> None:
+    """Учесть новые письма периода: счётчики, карточки (свежие первыми,
+    не больше CARDS_CAP) и важные."""
+    stt["new"] = stt.get("new", 0) + len(new_rows)
+    per = stt.setdefault("per_account", {})
+    for r in new_rows:
+        per[r["account"]] = per.get(r["account"], 0) + 1
+    cards = [_slim(r) for r in new_rows] + stt.get("cards", [])
+    stt["cards"] = cards[:CARDS_CAP]
+    stt.setdefault("important", []).extend(_slim(it) for it in important)
 
 
 def load_state(now):
@@ -88,26 +111,48 @@ def in_quiet(now_t, rng):
 
 # ── telegram ────────────────────────────────────────────────────────
 
-def tg_send(text: str, markup: dict = None) -> bool:
+def _tg_post(token: str, payload: dict) -> None:
+    req = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/sendMessage",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        json.loads(r.read())
+
+
+def tg_send(text: str, markup: dict = None, parts: list = None) -> bool:
+    """Сообщение в Telegram. parts — HTML-части (дайджест), упаковываются
+    в несколько сообщений; при отказе разметки уходят текстом."""
     token = config.env_get("TELEGRAM_BOT_TOKEN")
     chat = config.env_get("TELEGRAM_USER_ID")
     if not token or not chat.lstrip("-").isdigit():
         lg.error("proactive: пуш невозможен — нет TELEGRAM_BOT_TOKEN/TELEGRAM_USER_ID")
         return False
-    payload = {"chat_id": int(chat), "text": text[:4000]}
-    if markup:
-        payload["reply_markup"] = markup
-    req = urllib.request.Request(
-        f"https://api.telegram.org/bot{token}/sendMessage",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            json.loads(r.read())
-        return True
-    except Exception as e:  # noqa: BLE001
-        lg.warning(f"proactive: телеграм недоступен: {e}")
-        return False
+    chunks = render.pack(parts) if parts else [text[:4000]]
+    for i, chunk in enumerate(chunks):
+        payload = {"chat_id": int(chat), "text": chunk}
+        if parts:
+            payload["parse_mode"] = "HTML"
+        if markup and i == len(chunks) - 1:
+            payload["reply_markup"] = markup
+        try:
+            _tg_post(token, payload)
+        except urllib.error.HTTPError as e:
+            if not parts:
+                lg.warning(f"proactive: телеграм отверг сообщение: {e}")
+                return False
+            lg.warning(f"proactive: HTML отвергнут ({e}) — шлю текстом")
+            payload.pop("parse_mode")
+            payload["text"] = html.unescape(re.sub(r"<[^>]+>", "", chunk))
+            try:
+                _tg_post(token, payload)
+            except Exception as e2:  # noqa: BLE001
+                lg.warning(f"proactive: телеграм недоступен: {e2}")
+                return False
+        except Exception as e:  # noqa: BLE001
+            lg.warning(f"proactive: телеграм недоступен: {e}")
+            return False
+    return True
 
 
 def cleanup_kb(day: str) -> dict:
@@ -218,27 +263,39 @@ def collect_new(st) -> list:
     return all_new
 
 
-def build_digest(st, now) -> str:
+def digest_cards(st) -> tuple:
+    """(все карточки периода, важные) для рендера: категории — подписями,
+    важные — с превью, статус «непрочитано» — по живому ящику."""
     stt = st["stats"]
-    pend = st.get("pending", [])
-    lines = [f"☀️ Дайджест почты — {now.strftime('%d.%m %H:%M')}"]
-    if pend:
-        lines.append("\nВажное за тихие часы:")
-        lines.append(fmt_important(pend))
-    already = {(p.get("account"), p.get("sender"), p.get("subject")) for p in pend}
-    rest = [i for i in stt.get("important", [])
-            if (i.get("account"), i.get("sender"), i.get("subject")) not in already]
-    if rest:
-        lines.append("\nВажное за период (уже пинговал):")
-        lines.append(fmt_important(rest))
-    total = stt.get("new", 0)
-    per = stt.get("per_account", {})
-    if total:
-        detail = ", ".join(f"{k}: {v}" for k, v in per.items())
-        lines.append(f"\nВсего новых: {total} ({detail})")
-    else:
-        lines.append("\nНовых писем не было — тихо.")
-    return "\n".join(lines)
+    cards = [dict(c, category=providers.label(c.get("category", "")))
+             for c in stt.get("cards", [])]
+    seen, important = set(), []
+    for it in stt.get("important", []):
+        key = (it.get("account"), it.get("id") or it.get("subject"))
+        if key in seen:
+            continue
+        seen.add(key)
+        important.append(dict(it, category=providers.label(it.get("category", ""))))
+    unseen = {}
+    for acc in {c.get("account") for c in cards + important}:
+        try:
+            unseen[acc] = mail.unseen_ids(acc)
+        except mail.MailError as e:
+            lg.debug(f"digest: непрочитанные {acc}: {e}")
+    for c in cards + important:
+        c["unread"] = c.get("id") in unseen.get(c.get("account"), set())
+    try:
+        mail.add_previews(important)
+    except Exception as e:  # noqa: BLE001
+        lg.debug(f"digest: превью не получены: {e}")
+    return cards, important
+
+
+def build_digest(st, now) -> tuple:
+    """(HTML-части для Telegram, текст для терминала)."""
+    cards, important = digest_cards(st)
+    return (render.digest_html(now, cards, important),
+            render.digest_text(now, cards, important))
 
 
 def run_check(now=None, send=tg_send):
@@ -286,13 +343,8 @@ def _check(now, cfg, send):
                        "письма попадут в дайджест числом")
 
     stt = st["stats"]
-    stt["new"] = stt.get("new", 0) + len(all_new)
-    for r in all_new:
-        per = stt.setdefault("per_account", {})
-        per[r["account"]] = per.get(r["account"], 0) + 1
-    slim = [{k: it.get(k, "") for k in ("account", "sender", "subject", "reason")}
-            for it in important]
-    stt.setdefault("important", []).extend(slim)
+    accumulate(stt, all_new, important)
+    slim = [_slim(it) for it in important]
 
     if slim:
         if quiet:
@@ -309,7 +361,8 @@ def _check(now, cfg, send):
             digest_after = dtime(8, 0)
         today = now.date().isoformat()
         if st.get("last_digest", "") != today and now.time() >= digest_after:
-            send(build_digest(st, now))
+            parts, text = build_digest(st, now)
+            send(text, parts=parts)
             lg.info("proactive: отправлен дайджест")
             st["pending"] = []
             st["stats"] = _fresh_stats(now)
@@ -379,7 +432,7 @@ if __name__ == "__main__":
 
     sender = tg_send
     if args.dry_run:
-        def sender(text, markup=None):
+        def sender(text, markup=None, parts=None):
             print("\n──── [dry-run] сообщение в Telegram ────")
             print(text)
             if markup:
