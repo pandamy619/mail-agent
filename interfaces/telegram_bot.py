@@ -223,7 +223,6 @@ class Bot:
             lg.info("telegram: очистка сегодня уже выполнена — повтор не исполняю")
             self.send(chat_id, "Корзины сегодня уже чистил — повторно не трогаю.")
             return
-        # отметка ДО очистки: если упадём посередине, повтора не будет
         _write_json(CLEANUP_DONE_FILE,
                     {"date": today, "at": datetime.now().isoformat(timespec="seconds")})
         lines = []
@@ -305,11 +304,8 @@ class Bot:
             raise SystemExit(0)
 
     def loop(self):
-        # Смещение переживает рестарт и записывается ПОСЛЕ обработки апдейта
-        # (инцидент 06.09: смещение записали до ответа, контейнер пересобрали
-        # на середине — сообщение пропало навсегда). Если процесс умрёт на
-        # середине, Telegram отдаст апдейт снова; повтор безопасен: очистка
-        # корзин идемпотентна по дате, «да» без заявки — просто «заявок нет».
+        # смещение записывается после обработки: если процесс умрёт на
+        # середине, Telegram отдаст апдейт снова (повтор безопасен)
         try:
             offset = int(OFFSET_FILE.read_text(encoding="utf-8").strip() or 0)
         except (OSError, ValueError):
@@ -343,7 +339,6 @@ class Bot:
 
 
 def main():
-    # env_get: переменная окружения (Docker) приоритетнее .env
     token = config.env_get("TELEGRAM_BOT_TOKEN")
     if not token:
         print("❌ Не задан TELEGRAM_BOT_TOKEN.")
@@ -375,8 +370,6 @@ def main():
             f"ящик={default_acc} ===")
 
     def _warm():
-        # первый вызов после (пере)запуска Ollama холодный (81 с на этом
-        # сервере) — греем кэш промпта в фоне, не задерживая опрос Telegram
         try:
             lg.info(f"прогрев модели: {core.warmup():.0f} с")
         except Exception as e:  # noqa: BLE001

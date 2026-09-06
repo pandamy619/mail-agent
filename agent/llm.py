@@ -119,8 +119,7 @@ def chat(messages: list, tools: list = None, model: str = None,
     msg["content"] = _strip_think(msg.get("content", ""))
     calls = [tc.get("function", {}).get("name", "?")
              for tc in (msg.get("tool_calls") or [])]
-    # prompt_eval_count — размер промпта в токенах (Ollama считает его целиком,
-    # и при попадании в кэш тоже); о кэше говорит время вызова. eval_count — ответ
+    # prompt_eval_count — весь промпт, даже из кэша; о кэше говорит время
     lg.debug(f"llm {cfg['model']}: {len(messages)} сообщ. → "
              f"{time.monotonic() - t0:.1f} с, prompt={resp.get('prompt_eval_count', '?')} "
              f"ток., ответ={resp.get('eval_count', '?')} ток., tool_calls={calls or '—'}")
