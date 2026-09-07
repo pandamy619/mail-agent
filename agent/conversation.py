@@ -16,7 +16,7 @@ import re
 import time
 from datetime import datetime
 
-from . import config, core, llm, mail_index, providers, rules
+from . import config, core, llm, mail_index, providers, rules, toolbox
 from .log import get as _log
 from .tools import mail, mail_actions
 
@@ -191,7 +191,7 @@ class Conversation:
             payload = {"pending": True, "summary": self.pending["summary"],
                        "count": cnt}
         else:
-            ids = core.ids_list(args)
+            ids = toolbox.ids_list(args)
             if len(ids) > mail_actions.MAX_BATCH:
                 return json.dumps({"error": f"не больше {mail_actions.MAX_BATCH} "
                                             f"писем за одну заявку (запрошено "
@@ -307,7 +307,7 @@ class Conversation:
         except Exception:  # noqa: BLE001
             num_ctx = 16384
         prefix = (_est_tokens(self.history[0])
-                  + len(json.dumps(core.TOOLS, ensure_ascii=False)) // CHARS_PER_TOKEN)
+                  + len(json.dumps(toolbox.schemas(), ensure_ascii=False)) // CHARS_PER_TOKEN)
         return max(2000, num_ctx - prefix - ANSWER_RESERVE)
 
     def trimmed(self) -> list:
@@ -336,7 +336,7 @@ class Conversation:
         и инструментами (тот же префикс, что у реальных ходов). Секунды."""
         t0 = time.monotonic()
         llm.chat([self.system_message(), {"role": "user", "content": "привет"}],
-                 tools=core.TOOLS)
+                 tools=toolbox.schemas())
         return time.monotonic() - t0
 
     def run_turn(self, user_text: str, on_tool=None, on_progress=None) -> str:
@@ -364,7 +364,7 @@ class Conversation:
     def _loop(self, on_tool=None) -> str:
         lg = _log()
         for _ in range(MAX_STEPS):
-            msg = llm.chat(self.trimmed(), tools=core.TOOLS)
+            msg = llm.chat(self.trimmed(), tools=toolbox.schemas())
             calls = msg.get("tool_calls") or []
             self.history.append({"role": "assistant",
                                  "content": msg.get("content", ""),
@@ -386,7 +386,7 @@ class Conversation:
                     on_tool(name, args)
                 t0 = time.monotonic()
                 try:
-                    result = core.execute_tool(self, name, args)
+                    result = toolbox.execute(self, name, args)
                     lg.info(f"tool {name} {json.dumps(args, ensure_ascii=False)} → "
                             f"{len(result)} байт за {time.monotonic() - t0:.2f} с")
                 except Exception as e:  # noqa: BLE001 — ошибка уходит модели

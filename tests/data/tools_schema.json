@@ -1,0 +1,491 @@
+[
+ {
+  "type": "function",
+  "function": {
+   "name": "list_accounts",
+   "description": "Список ящиков с точными именами",
+   "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": []
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "list_recent",
+   "description": "Последние письма ящика, новые первыми",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "account": {
+      "type": "string",
+      "description": "имя ящика из list_accounts"
+     },
+     "limit": {
+      "type": "integer",
+      "description": "до 10"
+     }
+    },
+    "required": [
+     "account"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "list_unread",
+   "description": "Непрочитанные письма ящика, свежие первыми",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "account": {
+      "type": "string",
+      "description": "имя ящика из list_accounts"
+     },
+     "limit": {
+      "type": "integer",
+      "description": "до 10"
+     },
+     "category": {
+      "type": "string",
+      "description": "категория Gmail: promotions, social, updates, primary"
+     }
+    },
+    "required": [
+     "account"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "search_mail",
+   "description": "Поиск по отправителю и/или теме по всей истории ящика (индекс); возвращает total. Нужен хотя бы один фильтр",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "account": {
+      "type": "string",
+      "description": "имя ящика из list_accounts"
+     },
+     "sender_contains": {
+      "type": "string",
+      "description": "подстрока в отправителе, латиницей"
+     },
+     "subject_contains": {
+      "type": "string",
+      "description": "подстрока в теме"
+     },
+     "limit": {
+      "type": "integer",
+      "description": "до 10"
+     },
+     "offset": {
+      "type": "integer",
+      "description": "сдвиг листания"
+     },
+     "category": {
+      "type": "string",
+      "description": "категория Gmail: promotions, social, updates, primary"
+     }
+    },
+    "required": [
+     "account"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "read_mail",
+   "description": "Текст письма по id",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "account": {
+      "type": "string",
+      "description": "имя ящика из list_accounts"
+     },
+     "id": {
+      "type": "integer",
+      "description": "id письма"
+     },
+     "folder": {
+      "type": "string",
+      "description": "папка из результата list_folder; для Входящих не указывать"
+     }
+    },
+    "required": [
+     "account",
+     "id"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "list_folder",
+   "description": "Последние письма папки ящика: spam, trash, sent, drafts, archive или имя папки из list_mailboxes",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "account": {
+      "type": "string",
+      "description": "имя ящика из list_accounts"
+     },
+     "folder": {
+      "type": "string",
+      "description": "spam, trash, sent, drafts, archive или имя"
+     },
+     "limit": {
+      "type": "integer",
+      "description": "до 10"
+     }
+    },
+    "required": [
+     "account",
+     "folder"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "mark_read",
+   "description": "Пометить письма прочитанными (только по явной просьбе)",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "account": {
+      "type": "string",
+      "description": "имя ящика из list_accounts"
+     },
+     "ids": {
+      "type": "array",
+      "items": {
+       "type": "integer"
+      },
+      "description": "id писем"
+     }
+    },
+    "required": [
+     "account",
+     "ids"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "mailbox_stats",
+   "description": "Сводка индекса: всего, непрочитанных, глубина истории",
+   "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": []
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "list_mailboxes",
+   "description": "Папки ящика (для перемещения)",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "account": {
+      "type": "string",
+      "description": "имя ящика из list_accounts"
+     }
+    },
+    "required": [
+     "account"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "trash_messages",
+   "description": "ЗАЯВКА: письма по id → корзина; выполнится после согласия и confirm_action",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "account": {
+      "type": "string",
+      "description": "имя ящика из list_accounts"
+     },
+     "ids": {
+      "type": "array",
+      "items": {
+       "type": "integer"
+      },
+      "description": "id писем"
+     }
+    },
+    "required": [
+     "account",
+     "ids"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "move_messages",
+   "description": "ЗАЯВКА: письма по id → папка; выполнится после согласия и confirm_action",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "account": {
+      "type": "string",
+      "description": "имя ящика из list_accounts"
+     },
+     "ids": {
+      "type": "array",
+      "items": {
+       "type": "integer"
+      }
+     },
+     "mailbox": {
+      "type": "string",
+      "description": "папка из list_mailboxes"
+     }
+    },
+    "required": [
+     "account",
+     "ids",
+     "mailbox"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "trash_by_filter",
+   "description": "ЗАЯВКА: ВСЕ письма ящика по фильтру → корзина (для «все письма от X»); нужен хотя бы один фильтр",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "account": {
+      "type": "string",
+      "description": "имя ящика из list_accounts"
+     },
+     "sender_contains": {
+      "type": "string",
+      "description": "подстрока в отправителе, латиницей"
+     },
+     "subject_contains": {
+      "type": "string",
+      "description": "подстрока в теме"
+     }
+    },
+    "required": [
+     "account"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "move_by_filter",
+   "description": "ЗАЯВКА: ВСЕ письма ящика по фильтру → папка",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "account": {
+      "type": "string",
+      "description": "имя ящика из list_accounts"
+     },
+     "sender_contains": {
+      "type": "string"
+     },
+     "subject_contains": {
+      "type": "string"
+     },
+     "mailbox": {
+      "type": "string",
+      "description": "папка из list_mailboxes"
+     }
+    },
+    "required": [
+     "account",
+     "mailbox"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "empty_folder",
+   "description": "ЗАЯВКА: БЕЗВОЗВРАТНО очистить корзину (trash) или спам (spam) ящика",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "account": {
+      "type": "string",
+      "description": "имя ящика из list_accounts"
+     },
+     "folder": {
+      "type": "string",
+      "description": "trash или spam"
+     }
+    },
+    "required": [
+     "account",
+     "folder"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "confirm_action",
+   "description": "Выполнить текущую заявку — только после нового сообщения пользователя с явным согласием",
+   "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": []
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "cancel_action",
+   "description": "Отменить текущую заявку",
+   "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": []
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "remember_rule",
+   "description": "Запомнить постоянное правило («запомни: …»)",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "text": {
+      "type": "string",
+      "description": "текст правила"
+     }
+    },
+    "required": [
+     "text"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "list_rules",
+   "description": "Постоянные правила с номерами",
+   "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": []
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "forget_rule",
+   "description": "Удалить правило по номеру",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "n": {
+      "type": "integer",
+      "description": "номер"
+     }
+    },
+    "required": [
+     "n"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "create_draft",
+   "description": "Черновик нового письма в папке «Черновики» ящика (отправляет пользователь)",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "account": {
+      "type": "string",
+      "description": "имя ящика из list_accounts"
+     },
+     "to": {
+      "type": "string",
+      "description": "адрес"
+     },
+     "subject": {
+      "type": "string"
+     },
+     "body": {
+      "type": "string",
+      "description": "текст"
+     }
+    },
+    "required": [
+     "account",
+     "to",
+     "subject",
+     "body"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "reply_draft",
+   "description": "Черновик ответа на письмо по id с цитатой (отправляет пользователь)",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "account": {
+      "type": "string",
+      "description": "имя ящика из list_accounts"
+     },
+     "id": {
+      "type": "integer",
+      "description": "id письма"
+     },
+     "body": {
+      "type": "string",
+      "description": "текст ответа"
+     }
+    },
+    "required": [
+     "account",
+     "id"
+    ]
+   }
+  }
+ }
+]
