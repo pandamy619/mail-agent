@@ -27,7 +27,7 @@ lg = get_log()
 STATE_DIR = ROOT / "state"
 STATE_FILE = STATE_DIR / "proactive.json"
 LOCK_FILE = STATE_DIR / "lock"
-IMPORTANCE_FILE = ROOT / "data" / "importance.md"
+IMPORTANCE_FILE = agent_rules.IMPORTANCE_FILE
 NEW_CAP = 500       # новых писем за одну проверку (защита от лавины)
 
 

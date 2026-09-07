@@ -72,6 +72,26 @@ class SingleAccountDefaultTest(unittest.TestCase):
         self.assertIn("Ящик по умолчанию: Yandex", conv.history[0]["content"])
 
 
+class ImportanceInPromptTest(unittest.TestCase):
+    def test_criteria_without_header(self):
+        import tempfile
+        from agent import rules
+        tmp = tempfile.TemporaryDirectory(); orig = rules.IMPORTANCE_FILE
+        rules.IMPORTANCE_FILE = Path(tmp.name) / "importance.md"
+        rules.IMPORTANCE_FILE.write_text(
+            "# Критерии важности писем\n\nЭтот файл читает классификатор при каждой "
+            "проверке почты.\nПравьте обычным текстом — код трогать не нужно.\n\n"
+            "Важно:\n- письма от живых людей.\n\nНеважно:\n- рассылки.\n", encoding="utf-8")
+        try:
+            crit = rules.importance_criteria()
+            self.assertEqual(crit, "Важно:\n- письма от живых людей.\n\nНеважно:\n- рассылки.")
+            conv = Conversation(accounts=[{"name": "Google", "email": "x"}])
+            self.assertIn("Критерии важности писем (по ним отвечай", conv.history[0]["content"])
+            self.assertIn("письма от живых людей", conv.history[0]["content"])
+        finally:
+            rules.IMPORTANCE_FILE = orig; tmp.cleanup()
+
+
 class CursorTest(unittest.TestCase):
     def setUp(self):
         self._accs = check_mail.mail.accounts_info
