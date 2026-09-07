@@ -22,7 +22,6 @@ Telegram-интерфейс почтового агента (этап 4). Без
 """
 import html
 import json
-import re
 import signal
 import sys
 import threading
@@ -33,7 +32,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from agent import config, core, llm, render  # noqa: E402
+from agent import config, core, llm, render, telegram  # noqa: E402
 from agent.conversation import Conversation  # noqa: E402
 from agent import log as agent_log  # noqa: E402
 from agent.tools import mail, mail_actions  # noqa: E402
@@ -93,7 +92,7 @@ class Status:
                 self.bot.api("editMessageText", http_timeout=15,
                              chat_id=self.chat_id, message_id=self.msg_id,
                              text="⏳ " + text)
-        except RuntimeError as e:
+        except telegram.TelegramError as e:
             lg.debug(f"telegram: статус не обновился: {e}")
 
     def finish(self):
@@ -112,6 +111,7 @@ class Bot:
     def __init__(self, token: str, my_id, default_account: str = None,
                  accounts: list = None):
         self.token = token
+        self.tg = telegram.Transport(token)
         self.my_id = my_id
         self.default_account = default_account
         self.accounts = accounts or []
@@ -120,50 +120,15 @@ class Bot:
         self._busy = False     # идёт обработка апдейта (ответ модели)
         self._stop = False     # получен SIGTERM — завершиться после текущего
 
-    # ── транспорт ───────────────────────────────────────────────────
+    # ── транспорт (agent/telegram.py) ───────────────────────────────
     def api(self, method: str, http_timeout: int = 65, **params):
-        url = f"https://api.telegram.org/bot{self.token}/{method}"
-        req = urllib.request.Request(
-            url, data=json.dumps(params).encode("utf-8"),
-            headers={"Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=http_timeout) as r:
-                resp = json.loads(r.read())
-        except urllib.error.HTTPError as e:
-            body = ""
-            try:
-                body = e.read().decode("utf-8", "replace")
-            except Exception:
-                pass
-            raise RuntimeError(f"Telegram {method}: HTTP {e.code} {body[:200]}")
-        if not resp.get("ok"):
-            raise RuntimeError(f"Telegram {method}: {str(resp)[:200]}")
-        return resp["result"]
+        return self.tg.api(method, http_timeout=http_timeout, **params)
 
     def send(self, chat_id, text: str, markup=None):
-        text = text or "(пустой ответ)"
-        chunks = [text[i:i + 3900] for i in range(0, len(text), 3900)]
-        for i, chunk in enumerate(chunks):
-            payload = {"chat_id": chat_id, "text": chunk}
-            if markup and i == len(chunks) - 1:
-                payload["reply_markup"] = markup
-            self.api("sendMessage", http_timeout=30, **payload)
+        self.tg.send(chat_id, text, markup)
 
     def send_html(self, chat_id, parts: list, markup=None):
-        """Части с HTML-разметкой, упакованные в сообщения; если Telegram
-        разметку отверг — те же части без тегов."""
-        chunks = render.pack(parts)
-        for i, chunk in enumerate(chunks):
-            payload = {"chat_id": chat_id, "text": chunk, "parse_mode": "HTML"}
-            if markup and i == len(chunks) - 1:
-                payload["reply_markup"] = markup
-            try:
-                self.api("sendMessage", http_timeout=30, **payload)
-            except RuntimeError as e:
-                lg.warning(f"telegram: HTML отвергнут ({str(e)[:80]}) — шлю текстом")
-                payload.pop("parse_mode")
-                payload["text"] = html.unescape(re.sub(r"<[^>]+>", "", chunk))
-                self.api("sendMessage", http_timeout=30, **payload)
+        self.tg.send_html(chat_id, parts, markup)
 
     # ── логика ──────────────────────────────────────────────────────
     def _footer(self, used_accounts: list) -> str:
