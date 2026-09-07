@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Фабрика провайдеров: по IMAP-хосту ящика выбирается класс с особенностями
 сервиса (сейчас — категории Gmail); остальные ящики получают базовый IMAP."""
-from .base import LABELS, Provider, label  # noqa: F401
+from .base import LABELS, ROLE_LABELS, Provider, label, role_label, role_of  # noqa: F401
 from .gmail import GmailProvider
 
 _BY_HOST = {
