@@ -16,6 +16,7 @@ from pathlib import Path
 from .log import get as _log
 
 RULES_FILE = Path(__file__).resolve().parents[1] / "data" / "rules.md"
+IMPORTANCE_FILE = Path(__file__).resolve().parents[1] / "data" / "importance.md"
 MAX_RULES = 50
 MAX_LEN = 200
 
@@ -27,6 +28,19 @@ _HEADER = """# Правила агента
 не сохраняются.
 
 """
+
+
+def importance_criteria() -> str:
+    """Критерии важности из data/importance.md без служебной шапки
+    (заголовок и абзац «этот файл читает…»). Пусто, если файла нет."""
+    if not IMPORTANCE_FILE.exists():
+        return ""
+    text = IMPORTANCE_FILE.read_text(encoding="utf-8")
+    paragraphs = [p.strip() for p in text.split("\n\n")]
+    keep = [p for p in paragraphs
+            if p and not p.startswith("#") and "код трогать" not in p
+            and "читает классификатор" not in p]
+    return "\n\n".join(keep)
 
 
 def load_rules() -> list:

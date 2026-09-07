@@ -75,11 +75,15 @@ class Conversation:
         rb = rules.rules_block()
         rules_section = (f"\nПостоянные правила Влада (соблюдай всегда; при "
                          f"конфликте — более позднее):\n{rb}\n" if rb else "")
+        crit = rules.importance_criteria()
+        importance_section = (f"\nКритерии важности писем (по ним отвечай, есть ли "
+                              f"важное):\n{crit}\n" if crit else "")
         return {"role": "system",
                 "content": core.SYSTEM_PROMPT.format(
                     account_rule=rule,
                     accounts_line=accounts_line,
-                    rules_section=rules_section)}
+                    rules_section=rules_section,
+                    importance_section=importance_section)}
 
     # ── карточки хода ───────────────────────────────────────────────
 
