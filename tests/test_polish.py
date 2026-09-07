@@ -7,13 +7,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
-from agent import core  # noqa: E402
+from agent import conversation  # noqa: E402
+from agent.conversation import Conversation  # noqa: E402
 import check_mail  # noqa: E402
 
 
-def _hist(n_turns: int, tool_chars: int) -> list:
-    """История: система + n ходов «пользователь → вызов → результат → ответ»."""
-    h = core.new_history(default_account="Google", accounts=[])
+def _conv(n_turns: int, tool_chars: int) -> Conversation:
+    """Диалог: система + n ходов «пользователь → вызов → результат → ответ»."""
+    conv = Conversation(default_account="Google", accounts=[])
+    conv.history_budget = lambda: 3000   # токенов ≈ 9000 символов
+    h = conv.history
     for i in range(n_turns):
         h.append({"role": "user", "content": f"вопрос {i}"})
         h.append({"role": "assistant", "content": "",
@@ -21,62 +24,53 @@ def _hist(n_turns: int, tool_chars: int) -> list:
                                                "arguments": {"account": "Google"}}}]})
         h.append({"role": "tool", "tool_name": "list_recent", "content": "x" * tool_chars})
         h.append({"role": "assistant", "content": f"ответ {i}"})
-    return h
+    return conv
 
 
 class HistoryBudgetTest(unittest.TestCase):
-    def setUp(self):
-        self._budget = core.history_budget
-        core.history_budget = lambda: 3000   # токенов ≈ 9000 символов
-
-    def tearDown(self):
-        core.history_budget = self._budget
-
     def test_short_history_untouched(self):
-        h = _hist(2, 100)
-        self.assertEqual(core._trim(h), h)
+        conv = _conv(2, 100)
+        self.assertEqual(conv.trimmed(), conv.history)
 
     def test_big_tool_results_trimmed_to_budget(self):
-        h = _hist(6, 4000)              # 6 ходов по ~1400 токенов
-        t = core._trim(h)
+        conv = _conv(6, 4000)           # 6 ходов по ~1400 токенов
+        h, t = conv.history, conv.trimmed()
         self.assertIs(t[0], h[0])       # системный промпт на месте
         self.assertEqual(t[1]["role"], "user")   # хвост начинается с пользователя
         self.assertEqual(t[-1], h[-1])
-        self.assertLessEqual(sum(core._est_tokens(m) for m in t[1:]), 3000)
+        self.assertLessEqual(sum(conversation._est_tokens(m) for m in t[1:]), 3000)
 
     def test_current_turn_never_cut(self):
-        h = _hist(1, 100)
+        conv = _conv(1, 100)
+        h = conv.history
         h.append({"role": "user", "content": "текущий вопрос"})
         h.append({"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "read_mail", "arguments": {}}}]})
         h.append({"role": "tool", "tool_name": "read_mail", "content": "y" * 20000})  # больше бюджета
-        t = core._trim(h)
+        t = conv.trimmed()
         self.assertEqual(t[1]["content"], "текущий вопрос")
         self.assertEqual(len(t), 4)
 
     def test_message_cap_still_applies(self):
-        core.history_budget = lambda: 10 ** 9
-        h = _hist(20, 10)               # 80 сообщений
-        t = core._trim(h)
-        self.assertLessEqual(len(t), core.MAX_HISTORY + 1)
+        conv = _conv(20, 10)            # 80 сообщений
+        conv.history_budget = lambda: 10 ** 9
+        t = conv.trimmed()
+        self.assertLessEqual(len(t), conversation.MAX_HISTORY + 1)
         self.assertEqual(t[1]["role"], "user")
 
 
 class SingleAccountDefaultTest(unittest.TestCase):
     def test_single_account_becomes_default(self):
-        h = core.new_history(default_account=None,
-                             accounts=[{"name": "Google", "email": "x"}])
-        self.assertIn("Ящик по умолчанию: Google", h[0]["content"])
+        conv = Conversation(default_account=None, accounts=[{"name": "Google", "email": "x"}])
+        self.assertIn("Ящик по умолчанию: Google", conv.history[0]["content"])
 
     def test_several_accounts_still_ask(self):
-        h = core.new_history(default_account=None,
-                             accounts=[{"name": "Google", "email": "x"},
-                                       {"name": "Yandex", "email": "y"}])
-        self.assertIn("СНАЧАЛА спроси", h[0]["content"])
+        conv = Conversation(default_account=None, accounts=[{"name": "Google", "email": "x"},
+                                                            {"name": "Yandex", "email": "y"}])
+        self.assertIn("СНАЧАЛА спроси", conv.history[0]["content"])
 
     def test_explicit_default_wins(self):
-        h = core.new_history(default_account="Yandex",
-                             accounts=[{"name": "Google", "email": "x"}])
-        self.assertIn("Ящик по умолчанию: Yandex", h[0]["content"])
+        conv = Conversation(default_account="Yandex", accounts=[{"name": "Google", "email": "x"}])
+        self.assertIn("Ящик по умолчанию: Yandex", conv.history[0]["content"])
 
 
 class CursorTest(unittest.TestCase):

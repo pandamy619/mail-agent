@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from agent import core, render  # noqa: E402
+from agent import render  # noqa: E402
+from agent.conversation import Conversation  # noqa: E402
 
 NOW = time.time()
 CARDS = [
@@ -61,22 +62,20 @@ class TextTest(unittest.TestCase):
 
 
 class TurnCardsTest(unittest.TestCase):
-    def setUp(self):
-        core._turn_cards.clear()
-
     def test_numbering_across_tools_and_dedupe(self):
+        conv = Conversation()
         rows = [{"id": 1, "account": "Google", "sender": "a", "subject": "s", "unread": True,
                  "received": NOW, "age_str": "1 мин назад", "category": "social"},
                 {"id": 2, "account": "Google", "sender": "b", "subject": "t", "unread": False,
                  "received": NOW, "age_str": "2 мин назад"}]
-        core._fmt_list(rows)
-        core._fmt_list([rows[1], {"id": 3, "account": "Google", "sender": "c", "subject": "u",
-                                  "received": NOW, "age_str": ""}])
-        cards = core.turn_cards()
+        conv.fmt_list(rows)
+        conv.fmt_list([rows[1], {"id": 3, "account": "Google", "sender": "c", "subject": "u",
+                                 "received": NOW, "age_str": ""}])
+        cards = conv.turn_cards()
         self.assertEqual([c["n"] for c in cards], [1, 2, 3])
         self.assertEqual(cards[0]["category"], "Соцсети")
         self.assertEqual(cards[1]["category"], "")
-        self.assertEqual(core.turn_categories(), ["Соцсети"])
+        self.assertEqual(conv.turn_categories(), ["Соцсети"])
 
 
 if __name__ == "__main__":

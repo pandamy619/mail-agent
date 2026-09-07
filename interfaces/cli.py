@@ -17,6 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agent import config, core, llm, render  # noqa: E402
+from agent.conversation import Conversation  # noqa: E402
 from agent import log as agent_log  # noqa: E402
 from agent.tools import mail  # noqa: E402
 
@@ -83,7 +84,7 @@ def main():
     print("          «письма от гитхаба в корзину», «ответь Ивану, что согласен»")
     print(" Опасные действия выполняются только после вашего «да».")
 
-    history = core.new_history(default_account=default_acc, accounts=accounts)
+    conv = Conversation(default_account=default_acc, accounts=accounts)
     while True:
         try:
             text = input("\nвы: ").strip()
@@ -96,15 +97,14 @@ def main():
             print("Пока!")
             return
         if text.lower() == "/new":
-            history = core.new_history(default_account=default_acc, accounts=accounts)
-            core.cancel_pending()
+            conv = Conversation(default_account=default_acc, accounts=accounts)
             print("— новый диалог —")
             continue
 
         t0 = time.monotonic()
         try:
-            reply = core.run_turn(
-                history, text, on_tool=show_tool,
+            reply = conv.run_turn(
+                text, on_tool=show_tool,
                 on_progress=lambda t: print(f"{DIM}   … {t}{RESET}"))
         except llm.LLMError as e:
             print(f"\n❌ Проблема с моделью: {e}")
@@ -113,7 +113,7 @@ def main():
             print(f"\n❌ Проблема с почтой: {e}")
             continue
         dt = time.monotonic() - t0
-        cards = core.turn_cards()
+        cards = conv.turn_cards()
         if cards:
             try:
                 mail.add_previews(cards)

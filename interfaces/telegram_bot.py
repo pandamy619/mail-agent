@@ -34,6 +34,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agent import config, core, llm, render  # noqa: E402
+from agent.conversation import Conversation  # noqa: E402
 from agent import log as agent_log  # noqa: E402
 from agent.tools import mail, mail_actions  # noqa: E402
 
@@ -114,8 +115,8 @@ class Bot:
         self.my_id = my_id
         self.default_account = default_account
         self.accounts = accounts or []
-        self.history = core.new_history(default_account=default_account,
-                                        accounts=self.accounts)
+        self.conv = Conversation(default_account=default_account,
+                                 accounts=self.accounts)
         self._busy = False     # идёт обработка апдейта (ответ модели)
         self._stop = False     # получен SIGTERM — завершиться после текущего
 
@@ -200,15 +201,14 @@ class Bot:
 
         status = Status(self, chat_id)
         try:
-            reply = core.run_turn(self.history, text, on_tool=track,
-                                  on_progress=status)
+            reply = self.conv.run_turn(text, on_tool=track, on_progress=status)
         except llm.LLMError as e:
             reply = f"Проблема с моделью: {e}"
         except (mail.MailError, config.ConfigError) as e:
             reply = f"Проблема с почтой: {e}"
         status.finish()
-        markup = CONFIRM_KB if core.has_pending() else None
-        cards = core.turn_cards()
+        markup = CONFIRM_KB if self.conv.has_pending() else None
+        cards = self.conv.turn_cards()
         if not cards:
             self.send(chat_id, core.plain(reply) + self._footer(used), markup)
             return
@@ -294,9 +294,8 @@ class Bot:
                 self.send(chat_id, HELP)
                 return
             if text == "/new":
-                self.history = core.new_history(default_account=self.default_account,
-                                                accounts=self.accounts)
-                core.cancel_pending()
+                self.conv = Conversation(default_account=self.default_account,
+                                         accounts=self.accounts)
                 self.send(chat_id, "— новый диалог —")
                 return
             self.run_agent(chat_id, text)
@@ -401,7 +400,7 @@ def main():
 
     def _warm():
         try:
-            lg.info(f"прогрев модели: {core.warmup():.0f} с")
+            lg.info(f"прогрев модели: {bot.conv.warmup():.0f} с")
         except Exception as e:  # noqa: BLE001
             lg.warning(f"прогрев модели не удался: {e}")
     threading.Thread(target=_warm, name="warmup", daemon=True).start()
