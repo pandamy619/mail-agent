@@ -6,10 +6,12 @@
     @tool("имя", "описание для модели", params={...}, required=[...])
     def имя(conv, args) -> str: ...
 
-Порядок регистрации — порядок схем в промпте (менять осторожно: промпт
-с инструментами кэшируется Ollama байт в байт). Обработчик получает
-объект диалога Conversation: гейты читают из него последнее сообщение
-пользователя, заявки на опасные действия живут в нём же.
+Инструментов немного и они широкие (mail_list вместо четырёх списков,
+mail_move вместо четырёх перемещений): так короче промпт и меньше похожих
+имён, между которыми модель путается. Порядок регистрации — порядок схем
+в промпте (промпт с инструментами кэшируется Ollama байт в байт).
+Обработчик получает объект диалога Conversation: гейты читают из него
+последнее сообщение пользователя, заявки на опасные действия живут в нём.
 """
 import json
 import re
@@ -24,15 +26,11 @@ _SCHEMAS = []
 _HANDLERS = {}
 
 # общие описания параметров
-ACCOUNT = {"type": "string", "description": "имя ящика из list_accounts"}
-LIMIT = {"type": "integer", "description": "до 10"}
-CATEGORY = {"type": "string",
-            "description": "категория Gmail: promotions, social, updates, primary"}
+ACCOUNT = {"type": "string", "description": "имя ящика (mail_info accounts)"}
 IDS = {"type": "array", "items": {"type": "integer"}, "description": "id писем"}
 MAIL_ID = {"type": "integer", "description": "id письма"}
-SENDER = {"type": "string", "description": "подстрока в отправителе, латиницей"}
-SUBJECT = {"type": "string", "description": "подстрока в теме"}
-MAILBOX = {"type": "string", "description": "папка из list_mailboxes"}
+FOLDER = {"type": "string",
+          "description": "spam, trash, sent, drafts, archive или имя папки"}
 
 
 def tool(name: str, description: str, params: dict = None, required=()):
@@ -99,53 +97,60 @@ def ids_list(args: dict) -> list:
     return [int(i) for i in ids]
 
 
-# ── чтение ──────────────────────────────────────────────────────────
-
-@tool("list_accounts", "Список ящиков с точными именами")
-def list_accounts(conv, args):
-    return _ok({"accounts": mail.accounts_info()})
+def _text(args: dict, key: str) -> str:
+    return str(args.get(key) or "").strip()
 
 
-@tool("list_recent", "Последние письма ящика, новые первыми",
-      {"account": ACCOUNT, "limit": LIMIT}, ["account"])
-def list_recent(conv, args):
-    return conv.fmt_list(mail.list_recent(limit=clamp(args.get("limit"), 10),
-                                          account=args.get("account")))
+def _truthy(v) -> bool:
+    return str(v).strip().lower() in ("1", "true", "yes", "да")
 
 
-@tool("list_unread", "Непрочитанные письма ящика, свежие первыми",
-      {"account": ACCOUNT, "limit": LIMIT, "category": CATEGORY}, ["account"])
-def list_unread(conv, args):
-    return conv.fmt_list(mail.list_unread(limit=clamp(args.get("limit"), 10),
-                                          account=args.get("account"),
-                                          category=category(args)))
+# ── почта: чтение ───────────────────────────────────────────────────
+
+@tool("mail_list",
+      "Письма ящика. По умолчанию — последние из Входящих. unread=true — "
+      "непрочитанные. sender_contains/subject_contains — поиск по всей истории "
+      "Входящих (индекс, возвращает total; листать через offset). folder — "
+      "другая папка (spam, trash, sent, drafts, archive или имя). "
+      "category — вкладка Gmail, только если пользователь её назвал",
+      {"account": ACCOUNT,
+       "unread": {"type": "boolean", "description": "только непрочитанные"},
+       "sender_contains": {"type": "string", "description": "подстрока в отправителе, латиницей"},
+       "subject_contains": {"type": "string", "description": "подстрока в теме"},
+       "folder": FOLDER,
+       "category": {"type": "string", "description": "promotions, social, updates, primary"},
+       "limit": {"type": "integer", "description": "до 10"},
+       "offset": {"type": "integer", "description": "сдвиг листания поиска"}},
+      ["account"])
+def mail_list(conv, args):
+    acc = args.get("account")
+    limit = clamp(args.get("limit"), 10)
+    folder = _text(args, "folder")
+    if folder and providers.role_of(folder) != "inbox":
+        return conv.fmt_list(mail.list_folder(acc, folder, limit=limit))
+    snd, sub = _text(args, "sender_contains"), _text(args, "subject_contains")
+    if snd or sub:
+        return _search(conv, acc, snd, sub, clamp(args.get("limit"), 5),
+                       max(0, int(args.get("offset") or 0)), category(args))
+    if _truthy(args.get("unread")):
+        return conv.fmt_list(mail.list_unread(limit=limit, account=acc,
+                                              category=category(args)))
+    rows = mail.list_recent(limit=limit, account=acc)
+    if category(args):
+        rows = [r for r in rows if r.get("category") == category(args)]
+    return conv.fmt_list(rows)
 
 
-@tool("search_mail",
-      "Поиск по отправителю и/или теме по всей истории ящика (индекс); "
-      "возвращает total. Нужен хотя бы один фильтр",
-      {"account": ACCOUNT, "sender_contains": SENDER, "subject_contains": SUBJECT,
-       "limit": LIMIT, "offset": {"type": "integer", "description": "сдвиг листания"},
-       "category": CATEGORY}, ["account"])
-def search_mail(conv, args):
-    snd = (args.get("sender_contains") or "").strip()
-    sub = (args.get("subject_contains") or "").strip()
-    if not snd and not sub:
-        return _err("нужен хотя бы один фильтр: sender_contains или subject_contains")
-    canon = mail.resolve_account(args.get("account"))
+def _search(conv, acc, snd, sub, limit, offset, cat):
+    canon = mail.resolve_account(acc)
     try:
         # свежесть: подхватить новые письма ящика в индекс перед поиском
-        # (окно 50 покрывает даже плотный день корпоративной почты)
         mail.scan(window=50, account=canon)
     except mail.MailError as e:
         _log().debug(f"search: не удалось освежить индекс: {e}")
     if mail_index.is_ready(canon):
-        res = mail_index.search(sender_contains=snd or None,
-                                subject_contains=sub or None,
-                                account=canon,
-                                limit=clamp(args.get("limit"), 5),
-                                offset=max(0, int(args.get("offset") or 0)),
-                                category=category(args))
+        res = mail_index.search(sender_contains=snd or None, subject_contains=sub or None,
+                                account=canon, limit=limit, offset=offset, category=cat)
         out = [conv.card(r) for r in res["rows"]]
         payload = {"total": res["total"], "shown": len(out), "messages": out}
         if res["total"] == 0:
@@ -154,9 +159,9 @@ def search_mail(conv, args):
                                "прежде чем отвечать «нет писем»")
         return _ok(payload)
     rows = mail.search(sender_contains=snd or None, subject_contains=sub or None,
-                       limit=clamp(args.get("limit"), 5), account=canon)
-    if category(args):
-        rows = [r for r in rows if r.get("category") == category(args)]
+                       limit=limit, account=canon)
+    if cat:
+        rows = [r for r in rows if r.get("category") == cat]
     payload = json.loads(conv.fmt_list(rows))
     payload["note"] = ("индекс не построен — искал только среди последних "
                        "~100 писем; полный поиск по всей истории появится "
@@ -164,17 +169,17 @@ def search_mail(conv, args):
     return _ok(payload)
 
 
-@tool("read_mail", "Текст письма по id",
+@tool("mail_read", "Текст письма по id",
       {"account": ACCOUNT, "id": MAIL_ID,
        "folder": {"type": "string",
-                  "description": "папка из результата list_folder; для Входящих не указывать"}},
+                  "description": "папка, из которой взят id; для Входящих не указывать"}},
       ["account", "id"])
-def read_mail(conv, args):
+def mail_read(conv, args):
     if "id" not in args:
         return _err("нужен id письма")
     canon = mail.resolve_account(args.get("account"))
     folder = "INBOX"
-    if (args.get("folder") or "").strip():
+    if _text(args, "folder") and providers.role_of(args["folder"]) != "inbox":
         folder = mail.resolve_folder(canon, args["folder"])[0]
     body = mail.get_body_by_id(int(args["id"]), account=canon, max_chars=1500,
                                folder=folder)
@@ -188,20 +193,30 @@ def read_mail(conv, args):
     return _ok(payload)
 
 
-@tool("list_folder",
-      "Последние письма папки ящика: spam, trash, sent, drafts, archive "
-      "или имя папки из list_mailboxes",
-      {"account": ACCOUNT,
-       "folder": {"type": "string", "description": "spam, trash, sent, drafts, archive или имя"},
-       "limit": LIMIT}, ["account", "folder"])
-def list_folder(conv, args):
-    return conv.fmt_list(mail.list_folder(args.get("account"), args.get("folder", ""),
-                                          limit=clamp(args.get("limit"), 10)))
+@tool("mail_info", "Справочник: accounts — ящики с адресами; folders — папки "
+      "ящика; stats — сводка индекса (всего, непрочитанных, глубина)",
+      {"what": {"type": "string", "description": "accounts, folders или stats"},
+       "account": ACCOUNT}, ["what"])
+def mail_info(conv, args):
+    what = _text(args, "what").lower()
+    if what == "accounts":
+        return _ok({"accounts": mail.accounts_info()})
+    if what == "folders":
+        return _ok({"folders": mail_actions.list_mailboxes(args.get("account"))})
+    if what == "stats":
+        stats = mail_index.counts()
+        if not stats:
+            return _err("индекс пуст — предложи пользователю запустить "
+                        "python3 scripts/build_index.py")
+        return _ok({"index": stats, "note": "данные локального индекса «Входящих»"})
+    return _err("what должен быть accounts, folders или stats")
 
 
-@tool("mark_read", "Пометить письма прочитанными (только по явной просьбе)",
+# ── почта: действия ─────────────────────────────────────────────────
+
+@tool("mail_mark_read", "Пометить письма прочитанными (только по явной просьбе)",
       {"account": ACCOUNT, "ids": IDS}, ["account", "ids"])
-def mark_read(conv, args):
+def mail_mark_read(conv, args):
     if not re.search(r"прочит|прочт", conv.last_user_text or "", re.IGNORECASE):
         _log().warning(f"mark_read ОТКЛОНЁН кодом: пользователь не просил "
                        f"(«{(conv.last_user_text or '')[:60]}»)")
@@ -211,59 +226,40 @@ def mark_read(conv, args):
     return _ok({"marked_read": n})
 
 
-@tool("mailbox_stats", "Сводка индекса: всего, непрочитанных, глубина истории")
-def mailbox_stats(conv, args):
-    stats = mail_index.counts()
-    if not stats:
-        return _err("индекс пуст — предложи пользователю запустить "
-                    "python3 scripts/build_index.py")
-    return _ok({"index": stats, "note": "данные локального индекса «Входящих»"})
+@tool("mail_move",
+      "ЗАЯВКА: переместить письма Входящих в корзину (target=trash) или папку. "
+      "Либо ids из результатов, либо фильтр sender_contains/subject_contains — "
+      "тогда ВСЕ совпавшие письма истории (для «все письма от X»). Ничего не "
+      "делает сразу: выполнится после согласия пользователя и confirm_action",
+      {"account": ACCOUNT,
+       "target": {"type": "string", "description": "trash или имя папки"},
+       "ids": IDS,
+       "sender_contains": {"type": "string", "description": "подстрока в отправителе, латиницей"},
+       "subject_contains": {"type": "string", "description": "подстрока в теме"}},
+      ["account", "target"])
+def mail_move(conv, args):
+    target = _text(args, "target")
+    if not target:
+        return _err("нужен target: trash или имя папки")
+    to_trash = providers.role_of(target) == "trash"
+    by_filter = bool(_text(args, "sender_contains") or _text(args, "subject_contains"))
+    if by_filter:
+        op = "trash_filter" if to_trash else "move_filter"
+    else:
+        if not args.get("ids"):
+            return _err("нужны ids писем или фильтр sender_contains/subject_contains")
+        op = "trash" if to_trash else "move"
+    if not to_trash:
+        args = dict(args, mailbox=target)
+    return conv.make_pending(op, args.get("account"), args)
 
 
-@tool("list_mailboxes", "Папки ящика (для перемещения)", {"account": ACCOUNT}, ["account"])
-def list_mailboxes(conv, args):
-    return _ok({"mailboxes": mail_actions.list_mailboxes(args.get("account"))})
-
-
-# ── заявки на опасные действия ──────────────────────────────────────
-
-@tool("trash_messages",
-      "ЗАЯВКА: письма по id → корзина; выполнится после согласия и confirm_action",
-      {"account": ACCOUNT, "ids": IDS}, ["account", "ids"])
-def trash_messages(conv, args):
-    return conv.make_pending("trash", args.get("account"), args)
-
-
-@tool("move_messages",
-      "ЗАЯВКА: письма по id → папка; выполнится после согласия и confirm_action",
-      {"account": ACCOUNT, "ids": {"type": "array", "items": {"type": "integer"}},
-       "mailbox": MAILBOX}, ["account", "ids", "mailbox"])
-def move_messages(conv, args):
-    return conv.make_pending("move", args.get("account"), args)
-
-
-@tool("trash_by_filter",
-      "ЗАЯВКА: ВСЕ письма ящика по фильтру → корзина (для «все письма от X»); "
-      "нужен хотя бы один фильтр",
-      {"account": ACCOUNT, "sender_contains": SENDER, "subject_contains": SUBJECT},
-      ["account"])
-def trash_by_filter(conv, args):
-    return conv.make_pending("trash_filter", args.get("account"), args)
-
-
-@tool("move_by_filter", "ЗАЯВКА: ВСЕ письма ящика по фильтру → папка",
-      {"account": ACCOUNT, "sender_contains": {"type": "string"},
-       "subject_contains": {"type": "string"}, "mailbox": MAILBOX},
-      ["account", "mailbox"])
-def move_by_filter(conv, args):
-    return conv.make_pending("move_filter", args.get("account"), args)
-
-
-@tool("empty_folder",
-      "ЗАЯВКА: БЕЗВОЗВРАТНО очистить корзину (trash) или спам (spam) ящика",
+@tool("mail_empty",
+      "ЗАЯВКА: БЕЗВОЗВРАТНО очистить корзину (trash) или спам (spam) ящика; "
+      "выполнится после согласия и confirm_action",
       {"account": ACCOUNT, "folder": {"type": "string", "description": "trash или spam"}},
       ["account", "folder"])
-def empty_folder(conv, args):
+def mail_empty(conv, args):
     return conv.make_pending("empty_folder", args.get("account"), args)
 
 
@@ -281,24 +277,45 @@ def cancel_action(conv, args):
 
 # ── правила ─────────────────────────────────────────────────────────
 
-@tool("remember_rule", "Запомнить постоянное правило («запомни: …»)",
-      {"text": {"type": "string", "description": "текст правила"}}, ["text"])
-def remember_rule(conv, args):
+@tool("rules", "Постоянные правила: action=list — показать с номерами; "
+      "add — запомнить (по команде «запомни: …»); forget — удалить по номеру n",
+      {"action": {"type": "string", "description": "list, add или forget"},
+       "text": {"type": "string", "description": "текст правила для add"},
+       "n": {"type": "integer", "description": "номер правила для forget"}},
+      ["action"])
+def rules_tool(conv, args):
+    action = _text(args, "action").lower()
+    if action == "add":
+        return _rules_add(conv, args)
+    if action == "forget":
+        try:
+            removed = rules.remove_rule(args.get("n", 0))
+        except (ValueError, TypeError) as e:
+            return _err(str(e))
+        return _ok({"forgotten": removed,
+                    "note": "номера оставшихся правил сдвинулись — "
+                            "при следующем «забудь» сверься со списком"})
+    if action == "list":
+        return _rules_list()
+    return _err("action должен быть list, add или forget")
+
+
+def _rules_add(conv, args):
     # правило берётся дословно из сообщения пользователя, а не из пересказа
     # модели: иначе текст чужого письма мог бы стать авто-правилом «удаляй сам»
     m = re.match(r"^\s*запомни(?:\s+правило)?\b[\s:,\-—]*",
                  conv.last_user_text or "", re.IGNORECASE)
     verbatim = conv.last_user_text[m.end():].strip() if m else ""
     if not verbatim:
-        _log().warning(f"remember_rule ОТКЛОНЁН кодом: сообщение пользователя "
+        _log().warning(f"rules add ОТКЛОНЁН кодом: сообщение пользователя "
                        f"«{(conv.last_user_text or '')[:60]}» не начинается с «запомни»")
         return _err("отказано кодом: правила добавляются только командой "
                     "пользователя, которая начинается со слова «запомни». "
                     "Попроси его написать: «запомни: …»")
     text = verbatim
-    if text != (args.get("text") or "").strip():
-        _log().info(f"remember_rule: дословный текст пользователя вместо "
-                    f"пересказа модели («{(args.get('text') or '')[:60]}»)")
+    if text != _text(args, "text"):
+        _log().info(f"rules add: дословный текст пользователя вместо "
+                    f"пересказа модели («{_text(args, 'text')[:60]}»)")
     try:
         n, entry = rules.add_rule(text)
     except ValueError as e:
@@ -318,8 +335,7 @@ def remember_rule(conv, args):
     return _ok(payload)
 
 
-@tool("list_rules", "Постоянные правила с номерами")
-def list_rules(conv, args):
+def _rules_list():
     block = rules.rules_block()
     payload = {"rules": block or "правил пока нет"}
     try:
@@ -341,39 +357,23 @@ def list_rules(conv, args):
     return _ok(payload)
 
 
-@tool("forget_rule", "Удалить правило по номеру",
-      {"n": {"type": "integer", "description": "номер"}}, ["n"])
-def forget_rule(conv, args):
-    try:
-        removed = rules.remove_rule(args.get("n", 0))
-    except (ValueError, TypeError) as e:
-        return _err(str(e))
-    return _ok({"forgotten": removed,
-                "note": "номера оставшихся правил сдвинулись — "
-                        "при следующем «забудь» сверься с list_rules"})
-
-
 # ── черновики ───────────────────────────────────────────────────────
 
-@tool("create_draft",
-      "Черновик нового письма в папке «Черновики» ящика (отправляет пользователь)",
-      {"account": ACCOUNT, "to": {"type": "string", "description": "адрес"},
-       "subject": {"type": "string"}, "body": {"type": "string", "description": "текст"}},
-      ["account", "to", "subject", "body"])
-def create_draft(conv, args):
-    result = mail_actions.create_draft(mail.resolve_account(args.get("account")),
-                                       args.get("to", ""), args.get("subject", ""),
-                                       args.get("body", ""))
-    return _ok({"result": result})
-
-
-@tool("reply_draft",
-      "Черновик ответа на письмо по id с цитатой (отправляет пользователь)",
-      {"account": ACCOUNT, "id": MAIL_ID,
-       "body": {"type": "string", "description": "текст ответа"}}, ["account", "id"])
-def reply_draft(conv, args):
-    if "id" not in args:
-        return _err("нужен id письма")
+@tool("draft", "Черновик в папке «Черновики» ящика, отправляет пользователь сам. "
+      "reply_to_id — ответ на письмо с цитатой; иначе новое письмо (нужны to и subject)",
+      {"account": ACCOUNT, "body": {"type": "string", "description": "текст"},
+       "reply_to_id": {"type": "integer", "description": "id письма, на которое отвечаем"},
+       "to": {"type": "string", "description": "адрес получателя нового письма"},
+       "subject": {"type": "string", "description": "тема нового письма"}},
+      ["account", "body"])
+def draft(conv, args):
     canon = mail.resolve_account(args.get("account"))
-    result = mail_actions.reply_draft(canon, int(args["id"]), args.get("body", ""))
+    if args.get("reply_to_id"):
+        result = mail_actions.reply_draft(canon, int(args["reply_to_id"]),
+                                          args.get("body", ""))
+    else:
+        if not _text(args, "to"):
+            return _err("для нового письма нужен адрес to (или reply_to_id для ответа)")
+        result = mail_actions.create_draft(canon, args.get("to", ""),
+                                           args.get("subject", ""), args.get("body", ""))
     return _ok({"result": result})

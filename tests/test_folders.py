@@ -67,14 +67,14 @@ class EmptyFolderTest(unittest.TestCase):
         toolbox.mail.resolve_account = self._resolve
 
     def test_spam_pending(self):
-        res = json.loads(toolbox.execute(self.conv, "empty_folder", {"account": "Google", "folder": "спам"}))
+        res = json.loads(toolbox.execute(self.conv, "mail_empty", {"account": "Google", "folder": "спам"}))
         self.assertTrue(res.get("pending"))
         self.assertIn("«Спам»", res["summary"])
         self.assertEqual(res["count"], 50)
         self.assertEqual(self.conv.pending["target"], "spam")
 
     def test_only_trash_and_spam(self):
-        res = json.loads(toolbox.execute(self.conv, "empty_folder", {"account": "Google", "folder": "sent"}))
+        res = json.loads(toolbox.execute(self.conv, "mail_empty", {"account": "Google", "folder": "sent"}))
         self.assertIn("error", res)
         self.assertFalse(self.conv.has_pending())
         with self.assertRaises(mail_actions.MailError):
