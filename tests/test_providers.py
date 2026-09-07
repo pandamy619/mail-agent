@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from agent import core, mail_index, providers  # noqa: E402
+from agent import mail_index, providers  # noqa: E402
+from agent.conversation import Conversation  # noqa: E402
 from agent.providers.gmail import GmailProvider  # noqa: E402
 
 
@@ -105,13 +106,13 @@ class IndexCategoryTest(unittest.TestCase):
 
 class CardCategoryTest(unittest.TestCase):
     def test_fmt_list_adds_label_and_tracks_turn(self):
-        core._turn_cards.clear()
-        out = core._fmt_list([{"id": 1, "age_str": "1 мин назад", "unread": True,
+        conv = Conversation()
+        out = conv.fmt_list([{"id": 1, "age_str": "1 мин назад", "unread": True,
                                "sender": "a", "subject": "b", "category": "social"},
                               {"id": 2, "age_str": "2 мин назад", "unread": False,
                                "sender": "c", "subject": "d"}])
         self.assertIn('"category": "Соцсети"', out)
-        self.assertEqual(core.turn_categories(), ["Соцсети"])
+        self.assertEqual(conv.turn_categories(), ["Соцсети"])
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ from .. import config, imap_client, mail_index, providers
 from ..imap_client import MailError  # noqa: F401 — публичное имя инструментов
 from ..log import get as _log
 
-# Хук живого прогресса долгих операций (устанавливает core.run_turn):
+# Хук живого прогресса долгих операций (устанавливает Conversation.run_turn):
 # callable(text) — интерфейсы показывают текст пользователю.
 progress_hook = None
 
