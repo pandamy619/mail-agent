@@ -201,10 +201,10 @@ def list_recent(limit: int = 10, account: str = None) -> list:
 
 
 def list_unread(limit: int = 10, window: int = 100, account: str = None,
-                category: str = None) -> list:
-    """Самые свежие непрочитанные письма ящика, при category — только этой
-    категории (window сохранён для совместимости: по IMAP непрочитанные
-    ищутся по всему ящику)."""
+                category: str = None) -> tuple:
+    """(самые свежие непрочитанные письма ящика, сколько их всего);
+    при category — только этой категории. window сохранён для
+    совместимости: по IMAP непрочитанные ищутся по всему ящику."""
     acc = resolve_account(account)
     sess = session(acc)
     uids = sess.search_uids("UNSEEN")
@@ -212,9 +212,9 @@ def list_unread(limit: int = 10, window: int = 100, account: str = None,
         cats = provider(acc).categories(sess, uids)
         uids = [u for u in uids if cats.get(u) == category]
     if not uids:
-        return []
+        return [], 0
     rows = sess.fetch_headers(uids[-int(limit):])
-    return _finish_rows(rows, acc)[: int(limit)]
+    return _finish_rows(rows, acc)[: int(limit)], len(uids)
 
 
 def search(sender_contains: str = None, subject_contains: str = None,
@@ -297,16 +297,17 @@ def resolve_folder(account: str, name: str) -> tuple:
                     f"есть: {', '.join(boxes[:25])}")
 
 
-def list_folder(account: str, folder: str, limit: int = 10) -> list:
-    """Последние письма любой папки ящика (живое чтение, без индекса)."""
+def list_folder(account: str, folder: str, limit: int = 10) -> tuple:
+    """(последние письма любой папки ящика, сколько всего в папке) —
+    живое чтение, без индекса."""
     acc = resolve_account(account)
     real, label_ = resolve_folder(acc, folder)
     sess = session(acc)
     uids = sess.all_uids(real)
     if not uids:
-        return []
+        return [], 0
     rows = sess.fetch_headers(uids[-int(limit):], folder=real)
-    return _finish_rows(rows, acc, folder=real, folder_label=label_)[: int(limit)]
+    return _finish_rows(rows, acc, folder=real, folder_label=label_)[: int(limit)], len(uids)
 
 
 PREVIEW_BYTES = 32000

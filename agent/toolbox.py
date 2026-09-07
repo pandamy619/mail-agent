@@ -127,18 +127,20 @@ def mail_list(conv, args):
     limit = clamp(args.get("limit"), 10)
     folder = _text(args, "folder")
     if folder and providers.role_of(folder) != "inbox":
-        return conv.fmt_list(mail.list_folder(acc, folder, limit=limit))
+        rows, total = mail.list_folder(acc, folder, limit=limit)
+        return conv.fmt_list(rows, total)
     snd, sub = _text(args, "sender_contains"), _text(args, "subject_contains")
     if snd or sub:
         return _search(conv, acc, snd, sub, clamp(args.get("limit"), 5),
                        max(0, int(args.get("offset") or 0)), category(args))
     if _truthy(args.get("unread")):
-        return conv.fmt_list(mail.list_unread(limit=limit, account=acc,
-                                              category=category(args)))
+        rows, total = mail.list_unread(limit=limit, account=acc, category=category(args))
+        return conv.fmt_list(rows, total)
     rows = mail.list_recent(limit=limit, account=acc)
     if category(args):
         rows = [r for r in rows if r.get("category") == category(args)]
-    return conv.fmt_list(rows)
+        return conv.fmt_list(rows)
+    return conv.fmt_list(rows, mail.count_messages(acc))
 
 
 def _search(conv, acc, snd, sub, limit, offset, cat):
