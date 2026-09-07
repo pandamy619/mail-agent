@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from agent import core, providers  # noqa: E402
+from agent import providers, toolbox  # noqa: E402
 from agent.conversation import Conversation  # noqa: E402
 from agent.providers.gmail import GmailProvider  # noqa: E402
 from agent.tools import mail_actions  # noqa: E402
@@ -58,23 +58,23 @@ class EmptyFolderTest(unittest.TestCase):
     def setUp(self):
         self.conv = Conversation()
         self._count = mail_actions.count_folder
-        self._resolve = core.mail.resolve_account
+        self._resolve = toolbox.mail.resolve_account
         mail_actions.count_folder = lambda acc, role: {"trash": 3, "spam": 50}[role]
-        core.mail.resolve_account = lambda name: "Google"
+        toolbox.mail.resolve_account = lambda name: "Google"
 
     def tearDown(self):
         mail_actions.count_folder = self._count
-        core.mail.resolve_account = self._resolve
+        toolbox.mail.resolve_account = self._resolve
 
     def test_spam_pending(self):
-        res = json.loads(core.execute_tool(self.conv, "empty_folder", {"account": "Google", "folder": "спам"}))
+        res = json.loads(toolbox.execute(self.conv, "empty_folder", {"account": "Google", "folder": "спам"}))
         self.assertTrue(res.get("pending"))
         self.assertIn("«Спам»", res["summary"])
         self.assertEqual(res["count"], 50)
         self.assertEqual(self.conv.pending["target"], "spam")
 
     def test_only_trash_and_spam(self):
-        res = json.loads(core.execute_tool(self.conv, "empty_folder", {"account": "Google", "folder": "sent"}))
+        res = json.loads(toolbox.execute(self.conv, "empty_folder", {"account": "Google", "folder": "sent"}))
         self.assertIn("error", res)
         self.assertFalse(self.conv.has_pending())
         with self.assertRaises(mail_actions.MailError):
