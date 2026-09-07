@@ -200,33 +200,46 @@ def move_by_filter_live(account: str, mailbox_name: str,
 
 # ── Корзина ─────────────────────────────────────────────────────────
 
-def count_trash(account: str) -> int:
+EMPTYABLE = ("trash", "spam")   # папки, которые можно очистить безвозвратно
+
+
+def count_folder(account: str, role: str) -> int:
     acc = resolve_account(account)
     sess = session(acc)
-    return sess.select(sess.trash_folder(), readonly=True)
+    return sess.select(sess.folder(role), readonly=True)
 
 
-def empty_trash(account: str) -> dict:
-    """Безвозвратно очистить корзину ящика (флаг \\Deleted + EXPUNGE).
+def empty_folder(account: str, role: str) -> dict:
+    """Безвозвратно очистить корзину или спам (флаг \\Deleted + EXPUNGE).
     Возвращает {"before", "after"} — результат ВСЕГДА проверяется пересчётом."""
+    if role not in EMPTYABLE:
+        raise MailError(f"очищать можно только корзину и спам, не «{role}»")
     acc = resolve_account(account)
     sess = session(acc)
-    trash = sess.trash_folder()
-    before = sess.select(trash, readonly=False)
+    folder = sess.folder(role)
+    before = sess.select(folder, readonly=False)
     if before == 0:
         return {"before": 0, "after": 0}
     sess.uid("STORE", "1:*", "+FLAGS.SILENT", "(\\Deleted)",
-             label=f"empty_trash {acc} flag")
+             label=f"empty {role} {acc} flag")
     conn = sess.conn()
-    sess._call(f"empty_trash {acc} expunge", conn.expunge)
+    sess._call(f"empty {role} {acc} expunge", conn.expunge)
     after = before
     for _ in range(4):
-        after = sess.select(trash, readonly=True)
+        after = sess.select(folder, readonly=True)
         if after == 0:
             break
         time.sleep(1.0)
-    _log().info(f"empty_trash {acc}: было {before}, осталось {after}")
+    _log().info(f"empty {role} {acc}: было {before}, осталось {after}")
     return {"before": before, "after": after}
+
+
+def count_trash(account: str) -> int:
+    return count_folder(account, "trash")
+
+
+def empty_trash(account: str) -> dict:
+    return empty_folder(account, "trash")
 
 
 # ── Папки ───────────────────────────────────────────────────────────
@@ -237,22 +250,8 @@ def list_mailboxes(account: str) -> list:
 
 
 def resolve_mailbox(account: str, name: str) -> str:
-    """Сопоставить имя папки с реальным списком; вернуть каноническое имя."""
-    if not name or not str(name).strip():
-        raise MailError("нужно имя папки (mailbox); список даёт list_mailboxes")
-    boxes = list_mailboxes(account)
-    low = str(name).strip().lower()
-    for b in boxes:
-        if b.lower() == low:
-            return b
-    matches = [b for b in boxes if low in b.lower()]
-    if len(matches) == 1:
-        return matches[0]
-    tails = [b for b in boxes if b.lower().rsplit("/", 1)[-1] == low]
-    if len(tails) == 1:
-        return tails[0]
-    raise MailError(f"папка «{name}» не найдена в ящике {account}; "
-                    f"есть: {', '.join(boxes[:25])}")
+    """Роль или имя папки → реальное имя (для перемещений)."""
+    return mail.resolve_folder(account, name)[0]
 
 
 # ── Черновики ───────────────────────────────────────────────────────

@@ -25,7 +25,7 @@ RED = "\033[31m"
 RESET = "\033[0m"
 
 DANGEROUS = {"trash_messages", "move_messages", "trash_by_filter",
-             "move_by_filter", "empty_trash", "confirm_action"}
+             "move_by_filter", "empty_folder", "confirm_action"}
 
 
 plain = core.plain  # очистка markdown живёт в ядре, общая с Telegram

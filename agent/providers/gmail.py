@@ -8,7 +8,7 @@ Gmail: категории вкладок («Промоакции», «Соцсе
 """
 import time
 
-from .base import Provider
+from .base import FALLBACK_NAMES, Provider
 
 SEARCH_KEYS = ("promotions", "social", "updates", "forums")
 CACHE_TTL = 600
@@ -17,6 +17,13 @@ CACHE_TTL = 600
 class GmailProvider(Provider):
     name = "gmail"
     has_categories = True
+    fallback_names = dict(FALLBACK_NAMES, **{
+        "spam": ("[Gmail]/Spam", "[Gmail]/Спам") + FALLBACK_NAMES["spam"],
+        "trash": ("[Gmail]/Trash", "[Gmail]/Корзина") + FALLBACK_NAMES["trash"],
+        "sent": ("[Gmail]/Sent Mail", "[Gmail]/Отправленные") + FALLBACK_NAMES["sent"],
+        "drafts": ("[Gmail]/Drafts", "[Gmail]/Черновики") + FALLBACK_NAMES["drafts"],
+        "all": ("[Gmail]/All Mail", "[Gmail]/Вся почта"),
+    })
 
     def __init__(self, account: dict):
         super().__init__(account)

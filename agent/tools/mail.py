@@ -108,11 +108,12 @@ def _age_str(sec: float) -> str:
     return mail_index._age_str(sec)
 
 
-def _finish_rows(rows: list, acc: str) -> list:
-    """Дополнить карточки полями агента (ящик, возраст, категория)
-    и упорядочить: свежие первыми."""
+def _finish_rows(rows: list, acc: str, folder: str = "INBOX",
+                 folder_label: str = "") -> list:
+    """Дополнить карточки полями агента (ящик, возраст, категория, папка)
+    и упорядочить: свежие первыми. Категории — только у «Входящих»."""
     cats = {}
-    if rows:
+    if rows and folder == "INBOX":
         try:
             cats = provider(acc).categories(session(acc), [r["id"] for r in rows])
         except MailError as e:
@@ -121,6 +122,8 @@ def _finish_rows(rows: list, acc: str) -> list:
         r["account"] = acc
         r["age_str"] = _age_str(r.get("age_sec", 0))
         r["category"] = cats.get(int(r["id"]), "")
+        r["folder"] = folder
+        r["folder_label"] = folder_label
     rows.sort(key=lambda r: (r.get("received") or 0, r["id"]), reverse=True)
     return rows
 
@@ -258,11 +261,52 @@ def iter_chunks(account: str, chunk: int = 500, newest_first: bool = True):
         yield len(uids), i, _finish_rows(sess.fetch_headers(part), acc)
 
 
-def get_body_by_id(mid: int, account: str = None, max_chars: int = 1500) -> str:
-    """Текст письма по UID. Только чтение (PEEK — статус не меняется)."""
+def get_body_by_id(mid: int, account: str = None, max_chars: int = 1500,
+                   folder: str = "INBOX") -> str:
+    """Текст письма по UID папки. Только чтение (PEEK — статус не меняется)."""
     acc = resolve_account(account)
-    raw = session(acc).fetch_body(int(mid))
+    raw = session(acc).fetch_body(int(mid), folder=folder)
     return imap_client.extract_text(raw, max_chars=int(max_chars))
+
+
+# ── Папки ───────────────────────────────────────────────────────────
+
+def resolve_folder(account: str, name: str) -> tuple:
+    """Роль («спам», spam) или имя папки → (реальное имя, подпись).
+    Подпись — роль по-русски или само имя."""
+    acc = resolve_account(account)
+    if not name or not str(name).strip():
+        raise MailError("нужна папка: spam, trash, sent, drafts, archive или имя "
+                        "из list_mailboxes")
+    sess = session(acc)
+    role = providers.role_of(name)
+    if role:
+        return sess.folder(role), providers.role_label(role)
+    boxes = sess.selectable_folders()
+    low = str(name).strip().lower()
+    for b in boxes:
+        if b.lower() == low:
+            return b, b
+    matches = [b for b in boxes if low in b.lower()]
+    if len(matches) == 1:
+        return matches[0], matches[0]
+    tails = [b for b in boxes if b.lower().rsplit("/", 1)[-1] == low]
+    if len(tails) == 1:
+        return tails[0], tails[0]
+    raise MailError(f"папка «{name}» не найдена в ящике {acc}; "
+                    f"есть: {', '.join(boxes[:25])}")
+
+
+def list_folder(account: str, folder: str, limit: int = 10) -> list:
+    """Последние письма любой папки ящика (живое чтение, без индекса)."""
+    acc = resolve_account(account)
+    real, label_ = resolve_folder(acc, folder)
+    sess = session(acc)
+    uids = sess.all_uids(real)
+    if not uids:
+        return []
+    rows = sess.fetch_headers(uids[-int(limit):], folder=real)
+    return _finish_rows(rows, acc, folder=real, folder_label=label_)[: int(limit)]
 
 
 PREVIEW_BYTES = 32000
@@ -270,10 +314,11 @@ PREVIEW_BYTES = 32000
 _INVISIBLE = re.compile("[\u200b-\u200f\u2060\ufeff\u00ad\u034f\u2800]+")
 
 
-def preview(mid: int, account: str, max_chars: int = 150) -> str:
+def preview(mid: int, account: str, max_chars: int = 150,
+            folder: str = "INBOX") -> str:
     """Начало текста письма по началу его RFC822 (одна строка)."""
     acc = resolve_account(account)
-    raw = session(acc).fetch_body(int(mid), max_bytes=PREVIEW_BYTES)
+    raw = session(acc).fetch_body(int(mid), folder=folder, max_bytes=PREVIEW_BYTES)
     text = imap_client.extract_text(raw, max_chars=max_chars * 6)
     text = " ".join(_INVISIBLE.sub(" ", text).split())
     return text if len(text) <= max_chars else text[: max_chars - 1] + "…"
@@ -288,7 +333,8 @@ def add_previews(cards: list, limit: int = 10, max_chars: int = 150) -> list:
     """Добавить preview первым limit карточкам; ошибки чтения — без превью."""
     for c in cards[:limit]:
         try:
-            c["preview"] = preview(c["id"], c["account"], max_chars=max_chars)
+            c["preview"] = preview(c["id"], c["account"], max_chars=max_chars,
+                                   folder=c.get("folder") or "INBOX")
         except (MailError, config.ConfigError) as e:
             _log().debug(f"preview {c.get('account')}/{c.get('id')}: {e}")
     return cards

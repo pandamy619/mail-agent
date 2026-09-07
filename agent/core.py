@@ -53,15 +53,18 @@ search_mail ищет по всей истории через индекс; ес�
 - Без подтверждения: черновики (create_draft, reply_draft — отправляет сам \
 пользователь) и mark_read — но ТОЛЬКО если пользователь явно попросил \
 пометить прочитанным; просмотр писем их не помечает.
+- Папки: list_folder показывает спам (spam), корзину (trash), отправленные \
+(sent), черновики, архив или папку по имени. id из папки действуют только \
+вместе с тем же folder (read_mail). Индекс и поиск — только «Входящие».
 - Опасные действия (trash_messages, move_messages, trash_by_filter, \
-move_by_filter, empty_trash) двухфазные: вызов лишь создаёт ЗАЯВКУ. \
+move_by_filter, empty_folder) двухфазные: вызов лишь создаёт ЗАЯВКУ. \
 Перескажи сводку с ТОЧНЫМ числом из заявки и спроси разрешения. \
 confirm_action — только если СЛЕДУЮЩЕЕ сообщение пользователя — короткое \
 явное «да» или кнопка; «стоп», «нет», любая поправка — cancel_action и новая \
 заявка. «ВСЕ письма от X» — только trash_by_filter/move_by_filter, не собирай \
 id из показанных.
-- «Удалить» = в корзину (обратимо). Безвозвратна только empty_trash — назови \
-число писем в корзине из заявки.
+- «Удалить» = в корзину (обратимо). Безвозвратна только очистка корзины или \
+спама (empty_folder) — назови число писем из заявки.
 - После confirm_action отчитайся числами из результата (moved, missing, left); \
 error — передай пользователю. Если он говорит, что в почте иначе, — не \
 выдумывай причин, повтори ответы инструментов и предложи logs/agent.log.
@@ -155,8 +158,27 @@ TOOLS = [
                 "properties": {
                     "account": _ACCOUNT_PARAM,
                     "id": {"type": "integer", "description": "id письма"},
+                    "folder": {"type": "string",
+                               "description": "папка из результата list_folder; для Входящих не указывать"},
                 },
                 "required": ["account", "id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_folder",
+            "description": "Последние письма папки ящика: spam, trash, sent, "
+                           "drafts, archive или имя папки из list_mailboxes",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "account": _ACCOUNT_PARAM,
+                    "folder": {"type": "string", "description": "spam, trash, sent, drafts, archive или имя"},
+                    "limit": {"type": "integer", "description": "до 10"},
+                },
+                "required": ["account", "folder"],
             },
         },
     },
@@ -268,12 +290,15 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "empty_trash",
-            "description": "ЗАЯВКА: БЕЗВОЗВРАТНО очистить корзину ящика",
+            "name": "empty_folder",
+            "description": "ЗАЯВКА: БЕЗВОЗВРАТНО очистить корзину (trash) или спам (spam) ящика",
             "parameters": {
                 "type": "object",
-                "properties": {"account": _ACCOUNT_PARAM},
-                "required": ["account"],
+                "properties": {
+                    "account": _ACCOUNT_PARAM,
+                    "folder": {"type": "string", "description": "trash или spam"},
+                },
+                "required": ["account", "folder"],
             },
         },
     },
@@ -391,6 +416,9 @@ def _card(m: dict) -> dict:
             "subject": m.get("subject", "")}
     if m.get("category"):
         card["category"] = providers.label(m["category"])
+    if m.get("folder") and m["folder"] != "INBOX":
+        card["folder"] = m["folder"]
+        _turn_cards[n - 1]["category"] = m.get("folder_label") or m["folder"]
     return card
 
 
@@ -525,13 +553,18 @@ def _make_pending(op: str, acc: str, args: dict) -> str:
                                   "при отказе — cancel_action")
         lg.info(f"заявка создана: {summary}")
         return json.dumps(payload, ensure_ascii=False)
-    if op == "empty_trash":
-        cnt = mail_actions.count_trash(acc)
-        _pending = {"op": op, "account": acc, "ids": [], "target": None,
-                    "summary": f"БЕЗВОЗВРАТНО очистить корзину {acc} ({cnt} писем)",
+    if op == "empty_folder":
+        role = providers.role_of(args.get("folder")) or ""
+        if role not in mail_actions.EMPTYABLE:
+            return json.dumps({"error": "очищать можно только trash (корзину) "
+                                        "или spam (спам)"}, ensure_ascii=False)
+        cnt = mail_actions.count_folder(acc, role)
+        _pending = {"op": op, "account": acc, "ids": [], "target": role,
+                    "summary": f"БЕЗВОЗВРАТНО очистить папку "
+                               f"«{providers.role_label(role)}» {acc} ({cnt} писем)",
                     "umsg": _user_msg_count}
         payload = {"pending": True, "summary": _pending["summary"],
-                   "trash_count": cnt}
+                   "count": cnt}
     else:
         ids = _ids_list(args)
         if len(ids) > mail_actions.MAX_BATCH:
@@ -624,14 +657,12 @@ def _confirm() -> str:
                            "note": ("сообщи числа; если left > 0 — предложи "
                                     "повторить" if left else "")},
                           ensure_ascii=False)
-    if p["op"] == "empty_trash":
-        res = mail_actions.empty_trash(p["account"])
-        payload = {"done": p["summary"],
-                   "was_in_trash": res["before"],
-                   "left_in_trash": res["after"]}
+    if p["op"] == "empty_folder":
+        res = mail_actions.empty_folder(p["account"], p["target"])
+        payload = {"done": p["summary"], "was": res["before"], "left": res["after"]}
         if res["after"] > 0:
             payload["warning"] = (
-                "корзина опустела не полностью — сообщи пользователю числа "
+                "папка опустела не полностью — сообщи пользователю числа "
                 "и предложи повторить очистку; частая причина — сервер "
                 "ещё синхронизирует папку"
             )
@@ -707,11 +738,18 @@ def execute_tool(name: str, args: dict) -> str:
         if "id" not in args:
             return json.dumps({"error": "нужен id письма"}, ensure_ascii=False)
         canon = mail.resolve_account(acc)
-        body = mail.get_body_by_id(int(args["id"]), account=canon, max_chars=1500)
+        folder = "INBOX"
+        if (args.get("folder") or "").strip():
+            folder = mail.resolve_folder(canon, args["folder"])[0]
+        body = mail.get_body_by_id(int(args["id"]), account=canon, max_chars=1500,
+                                   folder=folder)
         payload = {"id": int(args["id"]), "body": body.strip()}
-        info = mail_index.get_by_ids(canon, [int(args["id"])]).get(int(args["id"]))
-        if info and info.get("category"):
-            payload["category"] = providers.label(info["category"])
+        if folder == "INBOX":
+            info = mail_index.get_by_ids(canon, [int(args["id"])]).get(int(args["id"]))
+            if info and info.get("category"):
+                payload["category"] = providers.label(info["category"])
+        else:
+            payload["folder"] = folder
         return json.dumps(payload, ensure_ascii=False)
     if name == "mark_read":
         if not re.search(r"прочит|прочт", _last_user_text or "", re.IGNORECASE):
@@ -743,8 +781,11 @@ def execute_tool(name: str, args: dict) -> str:
         return _make_pending("trash_filter", acc, args)
     if name == "move_by_filter":
         return _make_pending("move_filter", acc, args)
-    if name == "empty_trash":
-        return _make_pending("empty_trash", acc, args)
+    if name == "empty_folder":
+        return _make_pending("empty_folder", acc, args)
+    if name == "list_folder":
+        return _fmt_list(mail.list_folder(acc, args.get("folder", ""),
+                                          limit=_clamp(args.get("limit"), 10)))
     if name == "confirm_action":
         return _confirm()
     if name == "cancel_action":

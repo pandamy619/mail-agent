@@ -21,18 +21,12 @@ import time
 from email.header import decode_header, make_header
 from email.parser import BytesParser
 
-from . import config
+from . import config, providers
 from .log import get as _log
 
 SOCKET_TIMEOUT = 60
 HEADER_FIELDS = "(FROM SUBJECT)"
 FETCH_HEADERS = f"(UID FLAGS INTERNALDATE BODY.PEEK[HEADER.FIELDS {HEADER_FIELDS}])"
-
-# Запасные имена папок, если сервер не отдаёт атрибуты SPECIAL-USE (RFC 6154)
-TRASH_NAMES = ("Trash", "Deleted Messages", "Deleted Items", "Корзина",
-               "[Gmail]/Trash", "[Gmail]/Корзина", "INBOX.Trash")
-DRAFTS_NAMES = ("Drafts", "Черновики", "[Gmail]/Drafts", "[Gmail]/Черновики",
-                "INBOX.Drafts")
 
 
 class MailError(Exception):
@@ -365,24 +359,19 @@ class Session:
         return [f["name"] for f in self.folders()
                 if "\\noselect" not in f["flags"]]
 
-    def _special(self, attr: str, fallbacks: tuple, override: str) -> str:
-        if override:
-            return override
-        for f in self.folders():
-            if attr in f["flags"]:
-                return f["name"]
-        names = {f["name"].lower(): f["name"] for f in self.folders()}
-        for cand in fallbacks:
-            if cand.lower() in names:
-                return names[cand.lower()]
-        raise MailError(f"{self.name}: не нашёл папку {attr[1:]} — задайте её "
-                        f"в config.yaml полем {attr[1:]}")
+    def folder(self, role: str) -> str:
+        """Имя папки по роли (spam, trash, sent, drafts, archive, all)."""
+        name = providers.for_account(self.account).folder(self, role)
+        if not name:
+            raise MailError(f"{self.name}: не нашёл папку «{providers.role_label(role)}» "
+                            f"— задайте её в config.yaml полем {role}")
+        return name
 
     def trash_folder(self) -> str:
-        return self._special("\\trash", TRASH_NAMES, self.account.get("trash"))
+        return self.folder("trash")
 
     def drafts_folder(self) -> str:
-        return self._special("\\drafts", DRAFTS_NAMES, self.account.get("drafts"))
+        return self.folder("drafts")
 
     # выбор папки
     def select(self, folder: str = "INBOX", readonly: bool = True) -> int:
