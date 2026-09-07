@@ -110,9 +110,12 @@ class Conversation:
             self._cards[n - 1]["category"] = m.get("folder_label") or m["folder"]
         return card
 
-    def fmt_list(self, rows: list) -> str:
+    def fmt_list(self, rows: list, total: int = None) -> str:
+        """Результат списка для модели: total — сколько всего (в папке,
+        непрочитанных, во Входящих), shown — сколько карточек показано."""
         out = [self.card(m) for m in rows]
-        return json.dumps({"count": len(out), "messages": out}, ensure_ascii=False)
+        return json.dumps({"total": len(out) if total is None else int(total),
+                           "shown": len(out), "messages": out}, ensure_ascii=False)
 
     def turn_cards(self) -> list:
         """Карточки писем, показанных за текущий ход, в порядке номеров."""
