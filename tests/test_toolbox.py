@@ -24,7 +24,7 @@ class SchemaTest(unittest.TestCase):
     def test_names_unique_and_ordered(self):
         names = toolbox.names()
         self.assertEqual(len(names), len(set(names)))
-        self.assertEqual(names[0], "list_accounts")
+        self.assertEqual(names[0], "mail_list")
         self.assertEqual([s["function"]["name"] for s in toolbox.schemas()], names)
 
 
