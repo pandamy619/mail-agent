@@ -123,20 +123,34 @@ def _truthy(v) -> bool:
        "offset": {"type": "integer", "description": "сдвиг листания поиска"}},
       ["account"])
 def mail_list(conv, args):
+    result = _mail_list(conv, args)
+    try:
+        payload = json.loads(result)
+        if "total" in payload:
+            conv.remember_list(args, max(0, int(args.get("offset") or 0)),
+                               payload["total"], payload["shown"])
+    except (ValueError, TypeError, KeyError):
+        pass
+    return result
+
+
+def _mail_list(conv, args):
     acc = args.get("account")
     limit = clamp(args.get("limit"), 10)
+    offset = max(0, int(args.get("offset") or 0))
     folder = _text(args, "folder")
     if folder and providers.role_of(folder) != "inbox":
-        rows, total = mail.list_folder(acc, folder, limit=limit)
+        rows, total = mail.list_folder(acc, folder, limit=limit, offset=offset)
         return conv.fmt_list(rows, total)
     snd, sub = _text(args, "sender_contains"), _text(args, "subject_contains")
     if snd or sub:
-        return _search(conv, acc, snd, sub, clamp(args.get("limit"), 5),
-                       max(0, int(args.get("offset") or 0)), category(args))
+        return _search(conv, acc, snd, sub, clamp(args.get("limit"), 5), offset,
+                       category(args))
     if _truthy(args.get("unread")):
-        rows, total = mail.list_unread(limit=limit, account=acc, category=category(args))
+        rows, total = mail.list_unread(limit=limit, account=acc,
+                                       category=category(args), offset=offset)
         return conv.fmt_list(rows, total)
-    rows = mail.list_recent(limit=limit, account=acc)
+    rows = mail.list_recent(limit=limit, account=acc, offset=offset)
     if category(args):
         rows = [r for r in rows if r.get("category") == category(args)]
         return conv.fmt_list(rows)

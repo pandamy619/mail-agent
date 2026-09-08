@@ -68,6 +68,10 @@ CONFIRM_KB = {"inline_keyboard": [[{"text": "✅ Да", "callback_data": "yes"},
                                    {"text": "❌ Нет", "callback_data": "no"}]]}
 
 
+def more_kb(token: str) -> dict:
+    return {"inline_keyboard": [[{"text": "⬇️ Ещё 10", "callback_data": token}]]}
+
+
 class Status:
     """Одно редактируемое статус-сообщение о ходе долгой операции."""
 
@@ -172,20 +176,39 @@ class Bot:
         except (mail.MailError, config.ConfigError) as e:
             reply = f"Проблема с почтой: {e}"
         status.finish()
-        markup = CONFIRM_KB if self.conv.has_pending() else None
         cards = self.conv.turn_cards()
+        if self.conv.has_pending():
+            markup = CONFIRM_KB
+        elif cards and self.conv.more_available():
+            markup = more_kb(self.conv.last_list["token"])
+        else:
+            markup = None
         if not cards:
             self.send(chat_id, core.plain(reply) + self._footer(used), markup)
             return
+        self._send_cards(chat_id, cards, [html.escape(core.plain(reply))],
+                         self._footer(used).strip(), markup)
+
+    def _send_cards(self, chat_id, cards, head_parts, footer, markup):
         try:
             mail.add_previews(cards)
         except Exception as e:  # noqa: BLE001 — превью не должно ломать ответ
             lg.debug(f"telegram: превью не получены: {e}")
-        parts = [html.escape(core.plain(reply))] + render.cards_html(cards)
-        footer = self._footer(used).strip()
+        parts = list(head_parts) + render.cards_html(cards)
         if footer:
             parts.append(html.escape(footer))
         self.send_html(chat_id, parts, markup)
+
+    def handle_more(self, chat_id, token: str):
+        """Кнопка «Ещё 10»: следующая страница кодом, без модели."""
+        cards = self.conv.page_more(token)
+        if not cards:
+            self.send(chat_id, "Этот список устарел — попросите показать заново.")
+            return
+        ll = self.conv.last_list
+        head = f"Показано {ll['offset'] + ll['shown']} из {ll['total']}"
+        markup = more_kb(ll["token"]) if self.conv.more_available() else None
+        self._send_cards(chat_id, cards, [html.escape(head)], "", markup)
 
     def _allowed(self, uid, chat_id, what: str) -> bool:
         """Команда принимается только от владельца и только в личном чате
@@ -284,6 +307,9 @@ class Bot:
             data = cq.get("data") or ""
             if data.startswith("cleanup_"):
                 self.handle_cleanup(chat_id, data)
+                return
+            if data.startswith("more:"):
+                self.handle_more(chat_id, data)
                 return
             answer = "да" if data == "yes" else "нет"
             self.run_agent(chat_id, answer)
