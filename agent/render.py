@@ -114,8 +114,10 @@ def aggregate_senders(cards: list) -> list:
     for c in cards:
         key = _sender_key(c.get("sender"))
         row = by.setdefault(key, {"sender": _sender_name(c.get("sender")),
-                                  "count": 0, "latest": c})
+                                  "count": 0, "latest": c, "ids": []})
         row["count"] += 1
+        if c.get("id") is not None:
+            row["ids"].append(c["id"])
         if (c.get("received") or 0) > (row["latest"].get("received") or 0):
             row["latest"] = c
     return sorted(by.values(), key=lambda r: r["latest"].get("received") or 0,
@@ -153,6 +155,30 @@ def digest_blocks(now, cards: list, important: list) -> dict:
             "groups": groups, "counts": counts}
 
 
+def digest_numbered(blocks: dict) -> list:
+    """Пронумерованные строки дайджеста для чата бота: одиночные письма
+    с id, группы отправителей со списком ids (свежие первыми)."""
+    out = []
+    for c in blocks["important"]:
+        out.append({"n": c["n"], "id": c.get("id"), "ids": [c.get("id")],
+                    "account": c.get("account"), "sender": c.get("sender", ""),
+                    "subject": c.get("subject", ""), "category": c.get("category", ""),
+                    "count": 1})
+    for g in blocks["groups"]:
+        for r in g["rows"]:
+            c = r["latest"]
+            ids = sorted({i for i in r.get("ids", []) if i is not None}, reverse=True)
+            out.append({"n": r["n"], "id": c.get("id"), "ids": ids or [c.get("id")],
+                        "account": c.get("account"), "sender": r["sender"],
+                        "subject": c.get("subject", ""), "category": c.get("category", ""),
+                        "count": r["count"]})
+    return out
+
+
+NUMBERS_NOTE = "Номера действуют в чате: «покажи третье», «удали второе»."
+
+
+
 def digest_html(now, cards: list, important: list) -> list:
     e = html.escape
     b = digest_blocks(now, cards, important)
@@ -181,6 +207,8 @@ def digest_html(now, cards: list, important: list) -> list:
         parts.append("\n".join(lines))
     if b["counts"]:
         parts.append(" · ".join(f"📂 <b>{e(l)}</b>: {v}" for l, v in b["counts"]))
+    if b["important"] or b["groups"]:
+        parts.append(f"<i>{e(NUMBERS_NOTE)}</i>")
     return parts
 
 

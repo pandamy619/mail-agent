@@ -78,7 +78,7 @@ class RenderTest(unittest.TestCase):
         self.assertIn("<blockquote expandable>Нужна подпись…</blockquote>", parts[2])
         self.assertIn("· ●", parts[2])
         self.assertIn("<b>GitLab</b> ×2", parts[3])
-        self.assertIn("📂 <b>Промоакции</b>: 1 · 📂 <b>Соцсети</b>: 1", parts[-1])
+        self.assertIn("📂 <b>Промоакции</b>: 1 · 📂 <b>Соцсети</b>: 1", parts[-2])
 
     def test_empty(self):
         parts = render.digest_html(datetime.now(), [], [])
@@ -91,6 +91,56 @@ class RenderTest(unittest.TestCase):
         self.assertIn("🔔 Важное (1)", t)
         self.assertIn("— срочность", t)
         self.assertIn("GitLab ×2", t)
+
+
+class NumberedTest(unittest.TestCase):
+    def test_numbered_rows_and_group_ids(self):
+        b = render.digest_blocks(datetime.now(), CARDS, IMPORTANT)
+        rows = render.digest_numbered(b)
+        self.assertEqual(rows[0]["n"], 1)
+        self.assertEqual(rows[0]["ids"], [6])
+        gitlab = next(r for r in rows if r["sender"] == "GitLab")
+        self.assertEqual((gitlab["count"], gitlab["ids"]), (2, [2, 1]))
+        self.assertEqual(rows[-1]["sender"], "Мария")
+        parts = render.digest_html(datetime.now(), CARDS, IMPORTANT)
+        self.assertIn("Номера действуют в чате", parts[-1])
+
+
+class AdoptDigestTest(unittest.TestCase):
+    def test_adopt_and_hints(self):
+        import json, tempfile, time
+        from agent.conversation import Conversation
+        b = render.digest_blocks(datetime.now(), CARDS, IMPORTANT)
+        rows = render.digest_numbered(b)
+        tmp = tempfile.TemporaryDirectory()
+        path = Path(tmp.name) / "digest_cards.json"
+        path.write_text(json.dumps({"at": time.time(), "rows": rows}), encoding="utf-8")
+        conv = Conversation(default_account="Google")
+        self.assertTrue(conv.adopt_digest(path))
+        self.assertEqual(conv.number_hint("покажи первое"), "письмо №1: id 6")
+        n_gitlab = next(r["n"] for r in rows if r["sender"] == "GitLab")
+        self.assertEqual(conv.number_hint(f"удали {n_gitlab}-е"),
+                         f"письма №{n_gitlab} (GitLab ×2): ids 2, 1")
+        # свежий список в диалоге важнее старого дайджеста
+        conv.fmt_list([{"id": 900, "account": "Google", "sender": "z", "subject": "s", "age_str": ""}])
+        conv._numbered = {c["n"]: c for c in conv._cards}; conv._numbered_at = time.time() + 1
+        self.assertFalse(conv.adopt_digest(path))
+        self.assertEqual(conv.number_hint("удали первое"), "письмо №1: id 900")
+        tmp.cleanup()
+
+    def test_save_rows(self):
+        import json, tempfile
+        tmp = tempfile.TemporaryDirectory()
+        orig_dir, orig_file = check_mail.STATE_DIR, check_mail.DIGEST_FILE
+        check_mail.STATE_DIR = Path(tmp.name); check_mail.DIGEST_FILE = Path(tmp.name) / "d.json"
+        try:
+            check_mail.save_digest_rows([{"n": 1, "id": 5, "ids": [5]}], datetime(2026, 9, 8, 8, 0))
+            data = json.loads(check_mail.DIGEST_FILE.read_text())
+            self.assertEqual(data["rows"][0]["id"], 5)
+            self.assertGreater(data["at"], 0)
+        finally:
+            check_mail.STATE_DIR, check_mail.DIGEST_FILE = orig_dir, orig_file
+            tmp.cleanup()
 
 
 class AccumulateTest(unittest.TestCase):
