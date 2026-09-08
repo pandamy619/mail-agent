@@ -265,17 +265,55 @@ def fetch_by_ids(account: str, ids: list) -> list:
     return _finish_rows(rows, acc)
 
 
-def iter_chunks(account: str, chunk: int = 500, newest_first: bool = True):
-    """Генератор: карточки «Входящих» пачками по `chunk` UID.
-    Для первичной индексации и живого фильтра-исполнителя."""
+def iter_chunks(account: str, chunk: int = 500, newest_first: bool = True,
+                folder: str = "INBOX", folder_label: str = "", cap: int = 0):
+    """Генератор: карточки папки пачками по `chunk` UID (свежие первыми).
+    Для первичной индексации, живого фильтра-исполнителя и поиска по папке;
+    cap > 0 — не больше N самых свежих писем."""
     acc = resolve_account(account)
     sess = session(acc)
-    uids = sess.all_uids("INBOX")
+    uids = sess.all_uids(folder)
     if newest_first:
         uids = uids[::-1]
+    if cap:
+        uids = uids[:int(cap)]
     for i in range(0, len(uids), int(chunk)):
         part = uids[i:i + int(chunk)]
-        yield len(uids), i, _finish_rows(sess.fetch_headers(part), acc)
+        rows = sess.fetch_headers(part, folder=folder)
+        yield len(uids), i, _finish_rows(rows, acc, folder=folder, folder_label=folder_label)
+
+
+def match_text(value: str, needle: str) -> bool:
+    """Подстрока без учёта регистра, точек, пробелов и дефисов
+    («mts.link» найдёт «MTS Link <invitation@mts-link.ru>»)."""
+    needle = (needle or "").lower().strip()
+    if not needle:
+        return True
+    low = (value or "").lower()
+    needle_n = mail_index._norm(needle)
+    return needle in low or (bool(needle_n) and needle_n in mail_index._norm(low))
+
+
+SEARCH_FOLDER_CAP = 2000
+
+
+def search_folder(account: str, folder: str, sender_contains: str = None,
+                  subject_contains: str = None, limit: int = 10, offset: int = 0,
+                  cap: int = SEARCH_FOLDER_CAP) -> tuple:
+    """(страница совпавших писем папки, сколько совпало всего) — живой
+    фильтр по заголовкам, без индекса, не глубже cap самых свежих писем."""
+    acc = resolve_account(account)
+    real, label_ = resolve_folder(acc, folder)
+    snd, sub = (sender_contains or "").strip(), (subject_contains or "").strip()
+    matched = []
+    for total, off, rows in iter_chunks(acc, folder=real, folder_label=label_, cap=cap):
+        for r in rows:
+            if match_text(r["sender"], snd) and match_text(r["subject"], sub):
+                matched.append(r)
+        _emit_progress(f"Просмотрено {_fmt_n(min(off + len(rows), total))} "
+                       f"из {_fmt_n(min(total, cap))} · найдено {len(matched)}…")
+    page = matched[int(offset):int(offset) + int(limit)]
+    return page, len(matched)
 
 
 def get_body_by_id(mid: int, account: str = None, max_chars: int = 1500,

@@ -31,18 +31,21 @@ MOVE_CHUNK = 200        # UID за одну команду перемещени�
 
 # ── Перемещение по UID ──────────────────────────────────────────────
 
-def _move_uids(sess, ids: list, target: str, label: str) -> list:
-    """Переместить письма (UID во «Входящих») в папку target.
-    Возвращает UID, которых после операции во «Входящих» больше нет
+def _move_uids(sess, ids: list, target: str, label: str,
+               folder: str = "INBOX") -> list:
+    """Переместить письма (UID в папке folder) в папку target.
+    Возвращает UID, которых после операции в folder больше нет
     (то есть реально перемещённых). Несуществующие пропускаются."""
     ids = sorted({int(i) for i in ids})
     if not ids:
         return []
-    present = sess.existing(ids, "INBOX")
+    if folder == target:
+        raise MailError(f"письма уже в папке «{target}»")
+    present = sess.existing(ids, folder)
     todo = [i for i in ids if i in present]
     if not todo:
         return []
-    sess.select("INBOX", readonly=False)
+    sess.select(folder, readonly=False)
     use_move = sess.has_cap("MOVE")
     for i in range(0, len(todo), MOVE_CHUNK):
         part = uid_set(todo[i:i + MOVE_CHUNK])
@@ -58,7 +61,7 @@ def _move_uids(sess, ids: list, target: str, label: str) -> list:
                 sess.conn().expunge()
         mail._emit_progress(f"Перемещено {min(i + MOVE_CHUNK, len(todo))} "
                             f"из {len(todo)}…")
-    still = sess.existing(todo, "INBOX")
+    still = sess.existing(todo, folder)
     done = [i for i in todo if i not in still]
     _log().info(f"{label}: запрошено {len(ids)}, было в ящике {len(todo)}, "
                 f"перемещено {len(done)}")
@@ -74,33 +77,39 @@ def _cleanup_index(acc: str, done_ids: list) -> None:
         pass
 
 
-def trash_by_ids(account: str, ids: list) -> int:
-    """Переместить письма (по id) в корзину. Возвращает, скольких убрал."""
+def trash_by_ids(account: str, ids: list, folder: str = "INBOX") -> int:
+    """Переместить письма (по id из папки folder) в корзину.
+    Возвращает, скольких убрал."""
     acc = resolve_account(account)
     ids = [int(i) for i in ids]
     if not ids:
         raise MailError("список писем пуст")
     if len(ids) > MAX_BATCH:
         raise MailError(f"не больше {MAX_BATCH} писем за ids-заявку — "
-                        "для «всех писем от X» есть trash_by_filter")
+                        "для «всех писем от X» есть фильтр")
     sess = session(acc)
-    done = _move_uids(sess, ids, sess.trash_folder(), f"trash {acc} n{len(ids)}")
-    _cleanup_index(acc, done)
+    done = _move_uids(sess, ids, sess.trash_folder(), f"trash {acc} n{len(ids)}",
+                      folder=folder)
+    if folder == "INBOX":
+        _cleanup_index(acc, done)
     return len(done)
 
 
-def move_by_ids(account: str, ids: list, mailbox_name: str) -> int:
-    """Переместить письма (по id) в папку ящика."""
+def move_by_ids(account: str, ids: list, mailbox_name: str,
+                folder: str = "INBOX") -> int:
+    """Переместить письма (по id из папки folder) в папку ящика."""
     acc = resolve_account(account)
     ids = [int(i) for i in ids]
     if not ids:
         raise MailError("список писем пуст")
     if len(ids) > MAX_BATCH:
         raise MailError(f"не больше {MAX_BATCH} писем за ids-заявку — "
-                        "для «всех писем от X» есть move_by_filter")
+                        "для «всех писем от X» есть фильтр")
     target = resolve_mailbox(acc, mailbox_name)
-    done = _move_uids(session(acc), ids, target, f"move {acc}→{target} n{len(ids)}")
-    _cleanup_index(acc, done)
+    done = _move_uids(session(acc), ids, target, f"move {acc}→{target} n{len(ids)}",
+                      folder=folder)
+    if folder == "INBOX":
+        _cleanup_index(acc, done)
     return len(done)
 
 
@@ -139,7 +148,8 @@ def _match(value: str, needle: str, needle_n: str) -> bool:
 
 
 def _filter_engine(account: str, sender_contains: str, subject_contains: str,
-                   target: str, label: str, older_days: int = 0) -> dict:
+                   target: str, label: str, older_days: int = 0,
+                   folder: str = "INBOX") -> dict:
     acc = resolve_account(account)
     snd = (sender_contains or "").lower().strip()
     sub = (subject_contains or "").lower().strip()
@@ -151,11 +161,14 @@ def _filter_engine(account: str, sender_contains: str, subject_contains: str,
     sess = session(acc)
     matched, done_ids, seen = 0, [], 0
     total = None
-    for total, offset, rows in mail.iter_chunks(acc, chunk=MATCH_CHUNK):
-        try:
-            mail_index.upsert(acc, rows)
-        except Exception:  # noqa: BLE001
-            pass
+    if folder == target:
+        raise MailError(f"письма уже в папке «{target}»")
+    for total, offset, rows in mail.iter_chunks(acc, chunk=MATCH_CHUNK, folder=folder):
+        if folder == "INBOX":
+            try:
+                mail_index.upsert(acc, rows)
+            except Exception:  # noqa: BLE001
+                pass
         ids = []
         for r in rows:
             if not _match(r["sender"], snd, snd_n):
@@ -170,32 +183,34 @@ def _filter_engine(account: str, sender_contains: str, subject_contains: str,
             raise MailError(f"совпало больше {BULK_CAP} писем — сузь фильтр")
         if ids:
             done_ids.extend(_move_uids(sess, ids, target,
-                                       f"{label} пачка {offset // MATCH_CHUNK + 1}"))
+                                       f"{label} пачка {offset // MATCH_CHUNK + 1}",
+                                       folder=folder))
         seen = min(offset + len(rows), total)
         mail._emit_progress(f"Просмотрено {mail._fmt_n(seen)} из {mail._fmt_n(total)} · "
                             f"найдено {matched}, обработано {len(done_ids)}…")
-    _cleanup_index(acc, done_ids)
+    if folder == "INBOX":
+        _cleanup_index(acc, done_ids)
     return {"matched": matched, "done": len(done_ids), "done_ids": done_ids}
 
 
 def trash_by_filter_live(account: str, sender_contains: str = None,
                          subject_contains: str = None,
-                         older_days: int = 0) -> dict:
-    """Все письма по фильтру (и старше N дней) → корзина, по живому ящику."""
+                         older_days: int = 0, folder: str = "INBOX") -> dict:
+    """Все письма папки по фильтру (и старше N дней) → корзина, по живому ящику."""
     acc = resolve_account(account)
     return _filter_engine(acc, sender_contains, subject_contains,
                           session(acc).trash_folder(), f"trash-live {acc}",
-                          older_days=older_days)
+                          older_days=older_days, folder=folder)
 
 
 def move_by_filter_live(account: str, mailbox_name: str,
                         sender_contains: str = None,
-                        subject_contains: str = None) -> dict:
-    """Все письма по фильтру → папка, по живому ящику."""
+                        subject_contains: str = None, folder: str = "INBOX") -> dict:
+    """Все письма папки по фильтру → папка, по живому ящику."""
     acc = resolve_account(account)
     target = resolve_mailbox(acc, mailbox_name)
     return _filter_engine(acc, sender_contains, subject_contains,
-                          target, f"move-live {acc}→{target}")
+                          target, f"move-live {acc}→{target}", folder=folder)
 
 
 # ── Корзина ─────────────────────────────────────────────────────────

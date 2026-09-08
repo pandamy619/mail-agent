@@ -128,7 +128,7 @@
   "type": "function",
   "function": {
    "name": "mail_move",
-   "description": "ЗАЯВКА: переместить письма Входящих в корзину (target=trash) или папку. Либо ids из результатов, либо фильтр sender_contains/subject_contains — тогда ВСЕ совпавшие письма истории (для «все письма от X»). Ничего не делает сразу: выполнится после согласия пользователя и confirm_action",
+   "description": "ЗАЯВКА: переместить письма Входящих в корзину (target=trash) или папку. Либо ids из результатов, либо фильтр sender_contains/subject_contains — тогда ВСЕ совпавшие письма (для «все письма от X»). folder — откуда брать (по умолчанию Входящие; «не спам» = folder=spam, target=inbox). Ничего не делает сразу: выполнится после согласия пользователя и confirm_action",
    "parameters": {
     "type": "object",
     "properties": {
@@ -138,7 +138,11 @@
      },
      "target": {
       "type": "string",
-      "description": "trash или имя папки"
+      "description": "trash, inbox или имя папки"
+     },
+     "folder": {
+      "type": "string",
+      "description": "откуда: spam, trash, sent или имя папки; по умолчанию Входящие"
      },
      "ids": {
       "type": "array",
