@@ -247,17 +247,24 @@ def digest_cards(st) -> tuple:
 def build_digest(st, now) -> tuple:
     """(HTML-части для Telegram, текст для терминала, строки с номерами)."""
     cards, important = digest_cards(st)
-    numbered = render.digest_numbered(render.digest_blocks(now, cards, important))
+    blocks = render.digest_blocks(now, cards, important)
     return (render.digest_html(now, cards, important),
-            render.digest_text(now, cards, important), numbered)
+            render.digest_text(now, cards, important),
+            render.digest_numbered(blocks), blocks["count_items"])
 
 
-def save_digest_rows(rows: list, now=None) -> None:
-    """Строки дайджеста с номерами — для бота («покажи третье»)."""
+def save_digest_rows(rows: list, now=None, count_items: dict = None) -> None:
+    """Строки дайджеста с номерами и письма категорий «числом» —
+    для бота («покажи третье», кнопки под дайджестом)."""
+    from . import providers
+    now = now or datetime.now()
+    key_of = {v: k for k, v in providers.LABELS.items()}
+    groups = {key_of[label]: items for label, items in (count_items or {}).items()
+              if label in key_of}
     STATE_DIR.mkdir(exist_ok=True)
     DIGEST_FILE.write_text(json.dumps(
-        {"at": (now or datetime.now()).timestamp(), "rows": rows},
-        ensure_ascii=False), encoding="utf-8")
+        {"at": now.timestamp(), "day": now.date().isoformat(),
+         "rows": rows, "groups": groups}, ensure_ascii=False), encoding="utf-8")
 
 
 def run_check(now=None, send=tg_send):
@@ -323,9 +330,10 @@ def _check(now, cfg, send):
             digest_after = dtime(8, 0)
         today = now.date().isoformat()
         if st.get("last_digest", "") != today and now.time() >= digest_after:
-            parts, text, numbered = build_digest(st, now)
-            send(text, parts=parts)
-            save_digest_rows(numbered, now)
+            parts, text, numbered, count_items = build_digest(st, now)
+            send(text, parts=parts,
+                 markup=render.digest_keyboard(count_items, now.date().isoformat()))
+            save_digest_rows(numbered, now, count_items)
             lg.info("proactive: отправлен дайджест")
             st["pending"] = []
             st["stats"] = _fresh_stats(now)

@@ -96,6 +96,7 @@ class Conversation:
         self._list_seq = 0
         self._numbered = {}          # n → карточка последнего показанного списка
         self._numbered_at = 0.0      # когда список показан (свежий дайджест старше — не берём)
+        self._n_base = 0             # с какого номера нумеровать карточки (после дайджеста)
 
     # ── системный промпт ────────────────────────────────────────────
 
@@ -139,7 +140,7 @@ class Conversation:
                 n = c["n"]
                 break
         else:
-            n = len(self._cards) + 1
+            n = self._n_base + len(self._cards) + 1
             self._cards.append({
                 "n": n, "id": mid, "account": acc, "sender": m.get("sender", ""),
                 "subject": m.get("subject", ""), "received": m.get("received"),
@@ -186,8 +187,10 @@ class Conversation:
         ll = self.last_list
         if not ll or ll["token"] != token or not self.more_available():
             return []
-        args = dict(ll["args"], offset=ll["offset"] + ll["shown"])
         before = len(self._cards)
+        if ll.get("kind") == "ids":
+            return self._page_ids(ll, before)
+        args = dict(ll["args"], offset=ll["offset"] + ll["shown"])
         result = toolbox.execute(self, "mail_list", args)
         self.history.append({"role": "assistant", "content": "",
                              "tool_calls": [{"function": {"name": "mail_list",
@@ -195,6 +198,42 @@ class Conversation:
         self.history.append({"role": "tool", "tool_name": "mail_list", "content": result})
         _log().info(f"листание кодом: mail_list offset={args['offset']} → "
                     f"{len(self._cards) - before} карточек")
+        for c in self._cards[before:]:
+            self._numbered[c["n"]] = dict(c)
+        self._numbered_at = time.time()
+        return [dict(c) for c in self._cards[before:]]
+
+    def show_ids(self, items: list, page: int = 10) -> list:
+        """Показать список писем по id (кнопка категории под дайджестом):
+        первая страница сразу, дальше — «Ещё 10». Нумерация продолжает
+        номера дайджеста."""
+        self._cards.clear()
+        self._n_base = max(self._numbered) if self._numbered else 0
+        self._list_seq += 1
+        self.last_list = {"kind": "ids", "args": {}, "items": list(items), "offset": 0,
+                          "shown": 0, "total": len(items), "page": page,
+                          "token": f"more:{self._list_seq}"}
+        return self._page_ids(self.last_list, 0)
+
+    def _page_ids(self, ll: dict, before: int) -> list:
+        start = ll["offset"] + ll["shown"]
+        chunk = ll["items"][start:start + ll.get("page", 10)]
+        rows = []
+        for acc in {i["account"] for i in chunk}:
+            ids = [i["id"] for i in chunk if i["account"] == acc]
+            try:
+                rows.extend(mail.fetch_by_ids(acc, ids))
+            except mail.MailError as e:
+                _log().warning(f"show_ids {acc}: {e}")
+        order = {(i["account"], i["id"]): k for k, i in enumerate(chunk)}
+        rows.sort(key=lambda r: order.get((r["account"], r["id"]), 999))
+        result = self.fmt_list(rows, ll["total"])
+        self._list_seq += 1
+        self.last_list = dict(ll, offset=start, shown=len(chunk), token=f"more:{self._list_seq}")
+        self.history.append({"role": "assistant", "content": "",
+                             "tool_calls": [{"function": {"name": "mail_list",
+                                                          "arguments": {"ids": [i["id"] for i in chunk]}}}]})
+        self.history.append({"role": "tool", "tool_name": "mail_list", "content": result})
         for c in self._cards[before:]:
             self._numbered[c["n"]] = dict(c)
         self._numbered_at = time.time()
@@ -479,6 +518,7 @@ class Conversation:
             lg.debug(f"rules: не удалось обновить промпт: {e}")
         mail.progress_hook = on_progress
         self._cards.clear()
+        self._n_base = 0
         try:
             return self._loop(on_tool)
         finally:

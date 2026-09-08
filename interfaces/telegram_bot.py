@@ -42,6 +42,7 @@ lg = agent_log.get()
 STATE_DIR = Path(__file__).resolve().parents[1] / "state"
 OFFSET_FILE = STATE_DIR / "telegram_offset"     # последний ОБРАБОТАННЫЙ update_id + 1
 CLEANUP_DONE_FILE = STATE_DIR / "cleanup_done.json"
+DIGEST_DONE_FILE = STATE_DIR / "digest_done.json"      # какие кнопки дайджеста уже исполнены
 
 
 def _read_json(path: Path) -> dict:
@@ -200,6 +201,73 @@ class Bot:
             parts.append(html.escape(footer))
         self.send_html(chat_id, parts, markup)
 
+    # ── кнопки под дайджестом (кодом, без модели) ────────────────────
+    def _digest_group(self, key: str, day: str):
+        """Письма категории из файла дайджеста за день day; None — устарело."""
+        from agent.conversation import DIGEST_FILE
+        data = _read_json(DIGEST_FILE)
+        if data.get("day") != day:
+            return None
+        return (data.get("groups") or {}).get(key) or []
+
+    def handle_digest_show(self, chat_id, key: str, day: str):
+        items = self._digest_group(key, day)
+        if items is None:
+            self.send(chat_id, "Этот дайджест устарел — кнопки действуют в день дайджеста.")
+            return
+        if not items:
+            self.send(chat_id, "В этой категории за период писем нет.")
+            return
+        from agent import providers
+        self.conv.adopt_digest()
+        cards = self.conv.show_ids(items)
+        ll = self.conv.last_list
+        head = f"📂 {providers.label(key)} за период: показано {ll['offset'] + ll['shown']} из {ll['total']}"
+        markup = more_kb(ll["token"]) if self.conv.more_available() else None
+        self._send_cards(chat_id, cards, [html.escape(head)], "", markup)
+
+    def handle_digest_trash(self, chat_id, key: str, day: str, confirmed: bool):
+        """Промо за период в корзину: первое нажатие — заявка с кнопками,
+        [Да] — перемещение по id с отчётом. Один раз в день, только в день
+        дайджеста; корзина обратима."""
+        from agent import providers
+        items = self._digest_group(key, day)
+        if items is None:
+            self.send(chat_id, "Этот дайджест устарел — кнопки действуют в день дайджеста.")
+            return
+        done_key = f"{key}:{day}"
+        if _read_json(DIGEST_DONE_FILE).get(done_key):
+            self.send(chat_id, f"«{providers.label(key)}» за этот период уже убирал — повторно не трогаю.")
+            return
+        if not items:
+            self.send(chat_id, "В этой категории за период писем нет.")
+            return
+        if not confirmed:
+            kb = {"inline_keyboard": [[
+                {"text": "✅ Да, в корзину", "callback_data": f"dg_trash_yes:{key}:{day}"},
+                {"text": "❌ Нет", "callback_data": "dg_no"}]]}
+            self.send(chat_id, f"В корзину {len(items)} писем категории "
+                               f"«{providers.label(key)}» за период дайджеста? "
+                               "Корзина обратима.", kb)
+            return
+        done = _read_json(DIGEST_DONE_FILE)
+        done[done_key] = datetime.now().isoformat(timespec="seconds")
+        _write_json(DIGEST_DONE_FILE, done)
+        moved, errors = 0, []
+        for acc in sorted({i["account"] for i in items}):
+            ids = [i["id"] for i in items if i["account"] == acc]
+            for k in range(0, len(ids), mail_actions.MAX_BATCH):
+                try:
+                    moved += mail_actions.trash_by_ids(acc, ids[k:k + mail_actions.MAX_BATCH])
+                except mail.MailError as e:
+                    errors.append(f"{acc}: {str(e)[:80]}")
+        lg.info(f"telegram: промо дайджеста в корзину ({done_key}): перемещено {moved} из {len(items)}")
+        text = (f"🗑 «{providers.label(key)}» за период: перемещено {moved} из {len(items)}, "
+                f"не найдено {len(items) - moved}.")
+        if errors:
+            text += "\nОшибки: " + "; ".join(errors)
+        self.send(chat_id, text)
+
     def handle_more(self, chat_id, token: str):
         """Кнопка «Ещё 10»: следующая страница кодом, без модели."""
         cards = self.conv.page_more(token)
@@ -311,6 +379,16 @@ class Bot:
                 return
             if data.startswith("more:"):
                 self.handle_more(chat_id, data)
+                return
+            if data.startswith("dg_"):
+                parts = data.split(":")
+                if parts[0] == "dg_show" and len(parts) == 3:
+                    self.handle_digest_show(chat_id, parts[1], parts[2])
+                elif parts[0] in ("dg_trash", "dg_trash_yes") and len(parts) == 3:
+                    self.handle_digest_trash(chat_id, parts[1], parts[2],
+                                             confirmed=parts[0] == "dg_trash_yes")
+                elif parts[0] == "dg_no":
+                    self.send(chat_id, "Ок, оставляю.")
                 return
             answer = "да" if data == "yes" else "нет"
             self.run_agent(chat_id, answer)
