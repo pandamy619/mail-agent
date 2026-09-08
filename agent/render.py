@@ -138,10 +138,12 @@ def digest_blocks(now, cards: list, important: list) -> dict:
     for c in important:
         n += 1
         imp.append(dict(c, n=n))
-    groups, counts = [], []
+    groups, counts, count_items = [], [], {}
     for label, group in _groups(rest):
         if label in COUNT_ONLY:
             counts.append((label, len(group)))
+            count_items[label] = [{"account": c.get("account"), "id": c.get("id")}
+                                  for c in group if c.get("id") is not None]
             continue
         rows = aggregate_senders(group)
         shown = []
@@ -152,7 +154,28 @@ def digest_blocks(now, cards: list, important: list) -> dict:
                        "more": max(0, len(rows) - SENDERS_CAP)})
     return {"when": now.strftime("%d.%m, %H:%M"), "total": len(cards),
             "per_account": per_account, "important": imp,
-            "groups": groups, "counts": counts}
+            "groups": groups, "counts": counts, "count_items": count_items}
+
+
+TRASHABLE = ("Промоакции",)   # категории с кнопкой «в корзину» под дайджестом
+
+
+def digest_keyboard(count_items: dict, day: str) -> dict:
+    """Кнопки под дайджестом: показать категорию, идущую числом, и убрать
+    промо в корзину. Пусто, если нечего показывать."""
+    from . import providers
+    key_of = {v: k for k, v in providers.LABELS.items()}
+    row, actions = [], []
+    for label, items in count_items.items():
+        if not items or label not in key_of:
+            continue
+        row.append({"text": f"📂 {label} {len(items)}",
+                    "callback_data": f"dg_show:{key_of[label]}:{day}"})
+        if label in TRASHABLE:
+            actions.append({"text": f"🗑 {label} за период в корзину",
+                            "callback_data": f"dg_trash:{key_of[label]}:{day}"})
+    rows = [r for r in (row, actions) if r]
+    return {"inline_keyboard": rows} if rows else None
 
 
 def digest_numbered(blocks: dict) -> list:
