@@ -9,7 +9,7 @@
 Запуск:
     python3 interfaces/cli.py
 
-Команды: /new — начать диалог заново, /exit — выход.
+Команды: /new — начать диалог заново, /more — следующие 10 писем, /exit — выход.
 """
 import sys
 import time
@@ -95,6 +95,19 @@ def main():
         if text.lower() in ("/exit", "/quit", "выход"):
             print("Пока!")
             return
+        if text.lower() in ("/more", "/ещё", "/еще"):
+            cards = conv.page_more(conv.last_list["token"]) if conv.last_list else []
+            if not cards:
+                print("Список устарел или показано всё — попросите заново.")
+                continue
+            try:
+                mail.add_previews(cards)
+            except Exception:  # noqa: BLE001
+                pass
+            print("\n" + render.cards_text(cards))
+            print(f"{DIM}   показано {conv.last_list['offset'] + conv.last_list['shown']} "
+                  f"из {conv.last_list['total']}{RESET}")
+            continue
         if text.lower() == "/new":
             conv = Conversation(default_account=default_acc, accounts=accounts)
             print("— новый диалог —")

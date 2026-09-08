@@ -38,6 +38,41 @@ def is_explicit_yes(text: str) -> bool:
                                                    for w in words)
 
 
+_ORDINALS = {
+    "перв": 1, "втор": 2, "трет": 3, "четверт": 4, "пят": 5, "шест": 6, "седьм": 7,
+    "восьм": 8, "девят": 9, "десят": 10, "одиннадцат": 11, "двенадцат": 12,
+    "тринадцат": 13, "четырнадцат": 14, "пятнадцат": 15, "шестнадцат": 16,
+    "семнадцат": 17, "восемнадцат": 18, "девятнадцат": 19, "двадцат": 20,
+    "тридцат": 30,
+}
+_ORD_WORD = re.compile(r"\b(" + "|".join(sorted(_ORDINALS, key=len, reverse=True))
+                       + r")(?:ьего|ьей|ье|ью|ое|ый|ая|ую|ого|ой|ому|ым|ые|ых|ь)?\b", re.IGNORECASE)
+_ORD_NUM = re.compile(r"(?:№\s*|\b)(\d{1,2})(?:-?(?:е|й|го|ю|ое|ый|ая|ую))?\b")
+
+
+def list_numbers(text: str) -> list:
+    """Номера писем из фразы: «пятнадцатое», «№12», «3-е», «двадцать первое»."""
+    out = []
+    t = (text or "").lower()
+    for m in _ORD_NUM.finditer(t):
+        out.append(int(m.group(1)))
+    words = [(m.start(), _ORDINALS[m.group(1).lower()]) for m in _ORD_WORD.finditer(t)]
+    i = 0
+    while i < len(words):
+        n = words[i][1]
+        if n in (20, 30) and i + 1 < len(words) and words[i + 1][1] < 10 \
+                and words[i + 1][0] - words[i][0] < 16:
+            n += words[i + 1][1]
+            i += 1
+        out.append(n)
+        i += 1
+    seen, res = set(), []
+    for n in out:
+        if n not in seen:
+            seen.add(n); res.append(n)
+    return res
+
+
 def _est_tokens(msg: dict) -> int:
     """Оценка размера сообщения в токенах (вместе с tool_calls)."""
     return len(json.dumps(msg, ensure_ascii=False)) // CHARS_PER_TOKEN + 1
@@ -54,6 +89,9 @@ class Conversation:
         self.user_msg_count = 0      # гейт подтверждений: заявка младше счётчика
         self.last_user_text = ""     # его читают гейты remember_rule / mark_read
         self._cards = []             # карточки писем текущего хода
+        self.last_list = None        # последний показанный список (для «Ещё 10»)
+        self._list_seq = 0
+        self._numbered = {}          # n → карточка последнего показанного списка
 
     # ── системный промпт ────────────────────────────────────────────
 
@@ -112,6 +150,7 @@ class Conversation:
         if m.get("folder") and m["folder"] != "INBOX":
             card["folder"] = m["folder"]
             self._cards[n - 1]["category"] = m.get("folder_label") or m["folder"]
+            self._cards[n - 1]["folder"] = m["folder"]
         return card
 
     def fmt_list(self, rows: list, total: int = None) -> str:
@@ -120,6 +159,52 @@ class Conversation:
         out = [self.card(m) for m in rows]
         return json.dumps({"total": len(out) if total is None else int(total),
                            "shown": len(out), "messages": out}, ensure_ascii=False)
+
+    # ── листание списков кодом («Ещё 10») ───────────────────────────
+
+    def remember_list(self, args: dict, offset: int, total: int, shown: int) -> None:
+        """Запомнить запрос последнего списка, чтобы интерфейс мог показать
+        следующую страницу без вызова модели."""
+        self._list_seq += 1
+        self.last_list = {"args": dict(args), "offset": int(offset),
+                          "total": int(total), "shown": int(shown),
+                          "token": f"more:{self._list_seq}"}
+
+    def more_available(self) -> bool:
+        ll = self.last_list
+        return bool(ll) and ll["shown"] > 0 and ll["offset"] + ll["shown"] < ll["total"]
+
+    def page_more(self, token: str) -> list:
+        """Следующая страница последнего списка тем же инструментом, без
+        модели. Карточки нумеруются дальше; в историю добавляется
+        результат инструмента, чтобы модель знала показанное.
+        Возвращает новые карточки; [] — если кнопка устарела или всё показано."""
+        ll = self.last_list
+        if not ll or ll["token"] != token or not self.more_available():
+            return []
+        args = dict(ll["args"], offset=ll["offset"] + ll["shown"])
+        before = len(self._cards)
+        result = toolbox.execute(self, "mail_list", args)
+        self.history.append({"role": "assistant", "content": "",
+                             "tool_calls": [{"function": {"name": "mail_list",
+                                                          "arguments": args}}]})
+        self.history.append({"role": "tool", "tool_name": "mail_list", "content": result})
+        _log().info(f"листание кодом: mail_list offset={args['offset']} → "
+                    f"{len(self._cards) - before} карточек")
+        for c in self._cards[before:]:
+            self._numbered[c["n"]] = dict(c)
+        return [dict(c) for c in self._cards[before:]]
+
+    def number_hint(self, text: str) -> str:
+        """«письмо №15: id 37289» для номеров из фразы пользователя — модель
+        не считает позиции сама (с 20 карточками она промахивалась)."""
+        hints = []
+        for n in list_numbers(text)[:3]:
+            c = self._numbered.get(n)
+            if c:
+                loc = f", папка {c['folder']}" if c.get("folder") not in (None, "", "INBOX") else ""
+                hints.append(f"письмо №{n}: id {c['id']}{loc}")
+        return "; ".join(hints)
 
     def turn_cards(self) -> list:
         """Карточки писем, показанных за текущий ход, в порядке номеров."""
@@ -354,7 +439,9 @@ class Conversation:
         # дата в сообщении, а не в системном промпте: неизменный префикс
         # переиспользуется кэшем Ollama
         stamp = datetime.now().strftime("%d.%m.%Y %H:%M")
-        self.history.append({"role": "user", "content": f"{user_text}\n(сейчас {stamp})"})
+        hint = self.number_hint(user_text)
+        note = f"(сейчас {stamp}" + (f"; {hint}" if hint else "") + ")"
+        self.history.append({"role": "user", "content": f"{user_text}\n{note}"})
         self.user_msg_count += 1
         self.last_user_text = user_text
         try:
@@ -367,6 +454,8 @@ class Conversation:
             return self._loop(on_tool)
         finally:
             mail.progress_hook = None
+            if self._cards:
+                self._numbered = {c["n"]: dict(c) for c in self._cards}
 
     def _loop(self, on_tool=None) -> str:
         lg = _log()

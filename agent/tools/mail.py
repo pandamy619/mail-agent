@@ -195,13 +195,27 @@ def scan(window: int = 25, account: str = None) -> list:
     return rows
 
 
-def list_recent(limit: int = 10, account: str = None) -> list:
-    """Последние письма указанного ящика."""
-    return scan(window=max(int(limit), 25), account=account)[: int(limit)]
+def _page(uids: list, limit: int, offset: int) -> list:
+    """Срез UID «страницы»: offset — сколько самых свежих пропустить."""
+    n = len(uids)
+    hi = max(0, n - int(offset))
+    return uids[max(0, hi - int(limit)):hi]
+
+
+def list_recent(limit: int = 10, account: str = None, offset: int = 0) -> list:
+    """Последние письма указанного ящика; offset — пропустить N свежих."""
+    if not offset:
+        return scan(window=max(int(limit), 25), account=account)[: int(limit)]
+    acc = resolve_account(account)
+    sess = session(acc)
+    uids = _page(sess.all_uids("INBOX"), limit, offset)
+    if not uids:
+        return []
+    return _finish_rows(sess.fetch_headers(uids), acc)[: int(limit)]
 
 
 def list_unread(limit: int = 10, window: int = 100, account: str = None,
-                category: str = None) -> tuple:
+                category: str = None, offset: int = 0) -> tuple:
     """(самые свежие непрочитанные письма ящика, сколько их всего);
     при category — только этой категории. window сохранён для
     совместимости: по IMAP непрочитанные ищутся по всему ящику."""
@@ -213,7 +227,10 @@ def list_unread(limit: int = 10, window: int = 100, account: str = None,
         uids = [u for u in uids if cats.get(u) == category]
     if not uids:
         return [], 0
-    rows = sess.fetch_headers(uids[-int(limit):])
+    page = _page(uids, limit, offset)
+    if not page:
+        return [], len(uids)
+    rows = sess.fetch_headers(page)
     return _finish_rows(rows, acc)[: int(limit)], len(uids)
 
 
@@ -297,7 +314,7 @@ def resolve_folder(account: str, name: str) -> tuple:
                     f"есть: {', '.join(boxes[:25])}")
 
 
-def list_folder(account: str, folder: str, limit: int = 10) -> tuple:
+def list_folder(account: str, folder: str, limit: int = 10, offset: int = 0) -> tuple:
     """(последние письма любой папки ящика, сколько всего в папке) —
     живое чтение, без индекса."""
     acc = resolve_account(account)
@@ -306,7 +323,10 @@ def list_folder(account: str, folder: str, limit: int = 10) -> tuple:
     uids = sess.all_uids(real)
     if not uids:
         return [], 0
-    rows = sess.fetch_headers(uids[-int(limit):], folder=real)
+    page = _page(uids, limit, offset)
+    if not page:
+        return [], len(uids)
+    rows = sess.fetch_headers(page, folder=real)
     return _finish_rows(rows, acc, folder=real, folder_label=label_)[: int(limit)], len(uids)
 
 
