@@ -156,6 +156,7 @@ class Bot:
         return "\n\n📮 " + ", ".join(parts)
 
     def run_agent(self, chat_id, text: str):
+        self.conv.adopt_digest()
         try:
             self.api("sendChatAction", http_timeout=15,
                      chat_id=chat_id, action="typing")

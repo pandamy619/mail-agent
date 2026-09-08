@@ -18,6 +18,7 @@ from pathlib import Path
 
 from . import auto_rules, classifier, config, llm, mail_index, providers, render, telegram
 from . import rules as agent_rules
+from .conversation import DIGEST_FILE
 from .log import get as get_log
 from .tools import mail, mail_actions
 
@@ -244,10 +245,19 @@ def digest_cards(st) -> tuple:
 
 
 def build_digest(st, now) -> tuple:
-    """(HTML-части для Telegram, текст для терминала)."""
+    """(HTML-части для Telegram, текст для терминала, строки с номерами)."""
     cards, important = digest_cards(st)
+    numbered = render.digest_numbered(render.digest_blocks(now, cards, important))
     return (render.digest_html(now, cards, important),
-            render.digest_text(now, cards, important))
+            render.digest_text(now, cards, important), numbered)
+
+
+def save_digest_rows(rows: list, now=None) -> None:
+    """Строки дайджеста с номерами — для бота («покажи третье»)."""
+    STATE_DIR.mkdir(exist_ok=True)
+    DIGEST_FILE.write_text(json.dumps(
+        {"at": (now or datetime.now()).timestamp(), "rows": rows},
+        ensure_ascii=False), encoding="utf-8")
 
 
 def run_check(now=None, send=tg_send):
@@ -313,8 +323,9 @@ def _check(now, cfg, send):
             digest_after = dtime(8, 0)
         today = now.date().isoformat()
         if st.get("last_digest", "") != today and now.time() >= digest_after:
-            parts, text = build_digest(st, now)
+            parts, text, numbered = build_digest(st, now)
             send(text, parts=parts)
+            save_digest_rows(numbered, now)
             lg.info("proactive: отправлен дайджест")
             st["pending"] = []
             st["stats"] = _fresh_stats(now)

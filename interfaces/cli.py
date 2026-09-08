@@ -114,6 +114,7 @@ def main():
             continue
 
         t0 = time.monotonic()
+        conv.adopt_digest()
         try:
             reply = conv.run_turn(
                 text, on_tool=show_tool,

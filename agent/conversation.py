@@ -15,10 +15,13 @@ import json
 import re
 import time
 from datetime import datetime
+from pathlib import Path
 
 from . import config, core, llm, mail_index, providers, rules, toolbox
 from .log import get as _log
 from .tools import mail, mail_actions
+
+DIGEST_FILE = Path(__file__).resolve().parents[1] / "state" / "digest_cards.json"
 
 MAX_STEPS = 8          # защита от зацикливания
 MAX_HISTORY = 40       # верхняя граница числа сообщений в контексте
@@ -92,6 +95,7 @@ class Conversation:
         self.last_list = None        # последний показанный список (для «Ещё 10»)
         self._list_seq = 0
         self._numbered = {}          # n → карточка последнего показанного списка
+        self._numbered_at = 0.0      # когда список показан (свежий дайджест старше — не берём)
 
     # ── системный промпт ────────────────────────────────────────────
 
@@ -193,17 +197,42 @@ class Conversation:
                     f"{len(self._cards) - before} карточек")
         for c in self._cards[before:]:
             self._numbered[c["n"]] = dict(c)
+        self._numbered_at = time.time()
         return [dict(c) for c in self._cards[before:]]
+
+    def adopt_digest(self, path=None) -> bool:
+        """Подхватить номера утреннего дайджеста из файла checker'а, если он
+        свежее последнего списка, показанного в этом диалоге."""
+        path = Path(path) if path else DIGEST_FILE
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            at = float(data.get("at") or 0)
+            rows = data.get("rows") or []
+        except (OSError, ValueError, TypeError):
+            return False
+        if not rows or at <= self._numbered_at:
+            return False
+        self._numbered = {int(r["n"]): dict(r) for r in rows if "n" in r}
+        self._numbered_at = at
+        _log().info(f"диалог: номера из дайджеста ({len(rows)} строк)")
+        return True
 
     def number_hint(self, text: str) -> str:
         """«письмо №15: id 37289» для номеров из фразы пользователя — модель
-        не считает позиции сама (с 20 карточками она промахивалась)."""
+        не считает позиции сама (с 20 карточками она промахивалась).
+        Для группы дайджеста («GitLab ×7») — все id группы."""
         hints = []
         for n in list_numbers(text)[:3]:
             c = self._numbered.get(n)
-            if c:
-                loc = f", папка {c['folder']}" if c.get("folder") not in (None, "", "INBOX") else ""
-                hints.append(f"письмо №{n}: id {c['id']}{loc}")
+            if not c:
+                continue
+            ids = [i for i in (c.get("ids") or []) if i is not None]
+            if len(ids) > 1:
+                hints.append(f"письма №{n} ({c.get('sender', '')} ×{len(ids)}): "
+                             f"ids {', '.join(str(i) for i in ids[:300])}")
+                continue
+            loc = f", папка {c['folder']}" if c.get("folder") not in (None, "", "INBOX") else ""
+            hints.append(f"письмо №{n}: id {c['id']}{loc}")
         return "; ".join(hints)
 
     def turn_cards(self) -> list:
@@ -456,6 +485,7 @@ class Conversation:
             mail.progress_hook = None
             if self._cards:
                 self._numbered = {c["n"]: dict(c) for c in self._cards}
+                self._numbered_at = time.time()
 
     def _loop(self, on_tool=None) -> str:
         lg = _log()
