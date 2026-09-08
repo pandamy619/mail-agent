@@ -4,13 +4,12 @@
 # Ollama остаётся на хосте (systemd, OLLAMA_HOST=0.0.0.0) и видна из
 # контейнеров как host.docker.internal (через сеть bridge — см. network_mode).
 #
-# Запуск:   docker compose up -d --build
+# Деплой:   scripts/release.sh vX.Y.Z   — образ из git-тега, тег в .env (MAIL_AGENT_TAG)
 # Логи:     docker compose logs -f bot   (или в Portainer)
-# Проверка: docker compose run --rm bot python3 scripts/test_mail.py
+# Проверка: docker compose run --rm --no-deps bot python3 scripts/test_mail.py
 
 x-agent: &agent
-  build: .
-  image: mail-agent:latest
+  image: mail-agent:${MAIL_AGENT_TAG:-dev}
   env_file: .env                     # секреты: пароли ящиков, токен бота
   environment: &agent-env
     TZ: Europe/Moscow                # тихие часы и время дайджеста — по этому времени
