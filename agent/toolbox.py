@@ -139,10 +139,17 @@ def _mail_list(conv, args):
     limit = clamp(args.get("limit"), 10)
     offset = max(0, int(args.get("offset") or 0))
     folder = _text(args, "folder")
+    snd, sub = _text(args, "sender_contains"), _text(args, "subject_contains")
     if folder and providers.role_of(folder) != "inbox":
+        if snd or sub:
+            rows, total = mail.search_folder(acc, folder, snd, sub, limit=limit,
+                                             offset=offset)
+            payload = json.loads(conv.fmt_list(rows, total))
+            payload["note"] = (f"живой поиск по папке, не глубже "
+                               f"{mail.SEARCH_FOLDER_CAP} свежих писем")
+            return _ok(payload)
         rows, total = mail.list_folder(acc, folder, limit=limit, offset=offset)
         return conv.fmt_list(rows, total)
-    snd, sub = _text(args, "sender_contains"), _text(args, "subject_contains")
     if snd or sub:
         return _search(conv, acc, snd, sub, clamp(args.get("limit"), 5), offset,
                        category(args))
@@ -245,10 +252,12 @@ def mail_mark_read(conv, args):
 @tool("mail_move",
       "ЗАЯВКА: переместить письма Входящих в корзину (target=trash) или папку. "
       "Либо ids из результатов, либо фильтр sender_contains/subject_contains — "
-      "тогда ВСЕ совпавшие письма истории (для «все письма от X»). Ничего не "
+      "тогда ВСЕ совпавшие письма (для «все письма от X»). folder — откуда брать "
+      "(по умолчанию Входящие; «не спам» = folder=spam, target=inbox). Ничего не "
       "делает сразу: выполнится после согласия пользователя и confirm_action",
       {"account": ACCOUNT,
-       "target": {"type": "string", "description": "trash или имя папки"},
+       "target": {"type": "string", "description": "trash, inbox или имя папки"},
+       "folder": {"type": "string", "description": "откуда: spam, trash, sent или имя папки; по умолчанию Входящие"},
        "ids": IDS,
        "sender_contains": {"type": "string", "description": "подстрока в отправителе, латиницей"},
        "subject_contains": {"type": "string", "description": "подстрока в теме"}},
@@ -258,6 +267,9 @@ def mail_move(conv, args):
     if not target:
         return _err("нужен target: trash или имя папки")
     to_trash = providers.role_of(target) == "trash"
+    if providers.role_of(target) == "inbox":
+        args = dict(args, target="INBOX")
+        target = "INBOX"
     by_filter = bool(_text(args, "sender_contains") or _text(args, "subject_contains"))
     if by_filter:
         op = "trash_filter" if to_trash else "move_filter"

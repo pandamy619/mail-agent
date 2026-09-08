@@ -301,6 +301,11 @@ class Conversation:
     def make_pending(self, op: str, acc: str, args: dict) -> str:
         lg = _log()
         acc = mail.resolve_account(acc)
+        folder, from_txt = "INBOX", ""
+        src = str(args.get("folder") or "").strip()
+        if op != "empty_folder" and src and providers.role_of(src) != "inbox":
+            folder, label_ = mail.resolve_folder(acc, src)
+            from_txt = f" ({label_})"
         if op in ("trash_filter", "move_filter"):
             snd = (args.get("sender_contains") or "").strip()
             sub = (args.get("subject_contains") or "").strip()
@@ -324,11 +329,13 @@ class Conversation:
                 target = mail_actions.resolve_mailbox(acc, args.get("mailbox"))
             count_txt = (f"~{approx['total']} (по индексу)" if approx else
                          "все совпавшие")
-            summary = (f"ВСЕ письма ({fdesc}) из {acc} → "
+            if folder != "INBOX":
+                count_txt = "все совпавшие в папке"
+            summary = (f"ВСЕ письма ({fdesc}) из {acc}{from_txt} → "
                        + ("корзина" if op == "trash_filter"
                           else f"папка «{target}»")
                        + f"; ожидается {count_txt}")
-            self.pending = {"op": op, "account": acc, "ids": [],
+            self.pending = {"op": op, "account": acc, "ids": [], "folder": folder,
                             "snd": snd, "sub": sub, "target": target,
                             "summary": summary, "umsg": self.user_msg_count}
             payload = {"pending": True, "summary": summary,
@@ -357,7 +364,7 @@ class Conversation:
                                             f"писем за одну заявку (запрошено "
                                             f"{len(ids)}) — разбей на части"},
                                   ensure_ascii=False)
-            known = mail_index.get_by_ids(acc, ids)
+            known = mail_index.get_by_ids(acc, ids) if folder == "INBOX" else {}
             letters = []
             for mid in ids[:8]:
                 info = known.get(int(mid))
@@ -366,9 +373,9 @@ class Conversation:
             target = None
             if op == "move":
                 target = mail_actions.resolve_mailbox(acc, args.get("mailbox"))
-            summary = (f"{len(ids)} писем из {acc} → корзина" if op == "trash"
-                       else f"{len(ids)} писем из {acc} → папка «{target}»")
-            self.pending = {"op": op, "account": acc, "ids": ids,
+            summary = (f"{len(ids)} писем из {acc}{from_txt} → корзина" if op == "trash"
+                       else f"{len(ids)} писем из {acc}{from_txt} → папка «{target}»")
+            self.pending = {"op": op, "account": acc, "ids": ids, "folder": folder,
                             "target": target, "summary": summary,
                             "umsg": self.user_msg_count}
             payload = {"pending": True, "summary": summary, "letters": letters}
@@ -413,22 +420,25 @@ class Conversation:
                               ensure_ascii=False)
         self.pending = None
         lg.info(f"заявка подтверждена, выполняю: {p['summary']}")
+        folder = p.get("folder") or "INBOX"
         if p["op"] == "trash":
-            found = mail_actions.trash_by_ids(p["account"], p["ids"])
+            found = mail_actions.trash_by_ids(p["account"], p["ids"], folder=folder)
             return json.dumps({"done": p["summary"], "moved": found,
                                "missing": len(p["ids"]) - found}, ensure_ascii=False)
         if p["op"] == "move":
-            found = mail_actions.move_by_ids(p["account"], p["ids"], p["target"])
+            found = mail_actions.move_by_ids(p["account"], p["ids"], p["target"],
+                                             folder=folder)
             return json.dumps({"done": p["summary"], "moved": found,
                                "missing": len(p["ids"]) - found}, ensure_ascii=False)
         if p["op"] in ("trash_filter", "move_filter"):
             if p["op"] == "trash_filter":
                 res = mail_actions.trash_by_filter_live(
-                    p["account"], p.get("snd") or None, p.get("sub") or None)
+                    p["account"], p.get("snd") or None, p.get("sub") or None,
+                    folder=folder)
             else:
                 res = mail_actions.move_by_filter_live(
                     p["account"], p["target"], p.get("snd") or None,
-                    p.get("sub") or None)
+                    p.get("sub") or None, folder=folder)
             left = res["matched"] - res["done"]
             return json.dumps({"done": p["summary"],
                                "found_live": res["matched"], "moved": res["done"],
