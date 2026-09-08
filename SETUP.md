@@ -34,17 +34,26 @@
 только из неё. Время контейнеров — `TZ=Europe/Moscow`: по нему считаются тихие
 часы, дайджест и вечерний вопрос про корзину.
 
+Версии разворачиваются по git-тегам, а не с ветки: образ собирается из
+содержимого тега (`git archive`), рабочая копия при этом может быть на любой
+ветке. Тег записывается в `.env` как `MAIL_AGENT_TAG`, compose подставляет его
+в имя образа; какая версия работает, видно в `docker compose ps` и Portainer.
+
 ```bash
-docker compose up -d --build            # собрать и запустить оба сервиса
+git tag -a v0.2.0 -m "…" && git push origin v0.2.0   # новая версия (semver)
+scripts/release.sh v0.2.0               # собрать образ из тега и перезапустить
+scripts/release.sh v0.1.0               # откат на прошлую версию
 docker compose logs -f checker          # живой лог (то же видно в Portainer)
 docker compose run --rm --no-deps bot python3 scripts/test_mail.py   # проверка ящиков
 docker compose run --rm --no-deps bot python3 scripts/build_index.py # индекс
 docker compose down                     # остановить
 ```
 
+Проверить незакоммиченный код, не трогая развёрнутую версию, можно, подмонтировав
+папки поверх образа: `docker compose run --rm --no-deps -v $PWD/agent:/app/agent bot …`.
+
 Секреты (`env_file`) в образ не попадают; `state/`, `data/`, `logs/` — папки
-проекта, примонтированные в контейнеры, поэтому образ пересобирать нужно
-только при изменении кода. Контейнеры работают от uid 1000 (владелец папки
+проекта, примонтированные в контейнеры. Контейнеры работают от uid 1000 (владелец папки
 проекта), файлы в volume остаются вашими. Логи: `logs/agent-bot.log`
 и `logs/agent-checker.log` (ротация 3×2 МБ) плюс дубль в stdout для
 `docker logs`. Порт 993 с самого хоста закрыт VPN-маршрутом — проверять
