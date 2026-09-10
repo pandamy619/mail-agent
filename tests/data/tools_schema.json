@@ -245,6 +245,37 @@
  {
   "type": "function",
   "function": {
+   "name": "watch",
+   "description": "Наблюдение за отправителем: action=add — следить за отправителем письма id (каждое новое письмо от него — пуш в Telegram сразу); list — какие наблюдения; remove — снять по номеру n или по письму id",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "action": {
+      "type": "string",
+      "description": "add, list или remove"
+     },
+     "id": {
+      "type": "integer",
+      "description": "id письма, чей отправитель"
+     },
+     "n": {
+      "type": "integer",
+      "description": "номер наблюдения для remove"
+     },
+     "account": {
+      "type": "string",
+      "description": "имя ящика (mail_info accounts)"
+     }
+    },
+    "required": [
+     "action"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
    "name": "draft",
    "description": "Черновик в папке «Черновики» ящика, отправляет пользователь сам. reply_to_id — ответ на письмо с цитатой; иначе новое письмо (нужны to и subject)",
    "parameters": {

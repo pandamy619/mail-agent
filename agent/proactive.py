@@ -16,7 +16,7 @@ from datetime import datetime
 from datetime import time as dtime
 from pathlib import Path
 
-from . import auto_rules, classifier, config, llm, mail_index, providers, render, telegram
+from . import auto_rules, classifier, config, llm, mail_index, providers, render, telegram, watches
 from . import rules as agent_rules
 from .conversation import DIGEST_FILE
 from .log import get as get_log
@@ -166,6 +166,32 @@ def run_auto_cleanup(send) -> None:
         lg.info(f"cleanup: {lines}")
 
 
+def notify_watched(rows: list, send) -> list:
+    """Письма от наблюдаемых отправителей: пуш сразу (без модели и тихих
+    часов), в дайджест — как важные с причиной. Возвращает карточки."""
+    out = []
+    for r in rows:
+        hit = watches.record_hit(r.get("sender", ""))
+        if not hit:
+            continue
+        w, how = hit
+        card = dict(r, reason=f"наблюдение: {w['name']} (совпал {watches.HOW_LABEL[how]})")
+        out.append(card)
+        try:
+            preview = mail.preview(r["id"], r["account"])
+        except Exception as e:  # noqa: BLE001
+            lg.debug(f"watch preview: {e}")
+            preview = ""
+        text = (f"👁 От {r.get('sender', '')}\n{r.get('subject', '')}"
+                + (f"\n\n{preview}" if preview else "")
+                + f"\n\n— наблюдение «{w['name']}», совпал {watches.HOW_LABEL[how]}"
+                + (f"; новый адрес {watches.parse_sender(r.get('sender', ''))['address']}"
+                   if how != "address" else ""))
+        send(text)
+        lg.info(f"watch: пуш о письме {r.get('id')} от {r.get('sender', '')[:60]} ({how})")
+    return out
+
+
 def _acc_label(account: str) -> str:
     try:
         em = mail.account_email(account)
@@ -294,7 +320,8 @@ def _check(now, cfg, send):
 
     all_new = collect_new(st)
 
-    important = []
+    watched = notify_watched(all_new, send)
+    important = list(watched)
     if all_new:
         criteria = (IMPORTANCE_FILE.read_text(encoding="utf-8")
                     if IMPORTANCE_FILE.exists()
@@ -306,7 +333,9 @@ def _check(now, cfg, send):
         except Exception as e:  # noqa: BLE001
             lg.debug(f"proactive: правила не подгрузились: {e}")
         try:
-            important = classifier.classify(all_new, criteria)
+            seen_w = {(w["account"], w["id"]) for w in watched}
+            important += [it for it in classifier.classify(all_new, criteria)
+                          if (it["account"], it["id"]) not in seen_w]
         except llm.LLMError as e:
             lg.warning(f"proactive: классификатор недоступен ({e}) — "
                        "письма попадут в дайджест числом")
