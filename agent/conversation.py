@@ -256,6 +256,13 @@ class Conversation:
         _log().info(f"диалог: номера из дайджеста ({len(rows)} строк)")
         return True
 
+    def card_by_id(self, mid: int, account: str = None) -> dict:
+        """Показанная карточка по id письма (текущий ход или последний список)."""
+        for c in list(self._cards) + list(self._numbered.values()):
+            if int(c.get("id") or 0) == int(mid) and (not account or c.get("account") in (account, None, "")):
+                return c
+        return None
+
     def number_hint(self, text: str) -> str:
         """«письмо №15: id 37289» для номеров из фразы пользователя — модель
         не считает позиции сама (с 20 карточками она промахивалась).

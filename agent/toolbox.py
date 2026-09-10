@@ -16,7 +16,7 @@ mail_move вместо четырёх перемещений): так короч
 import json
 import re
 
-from . import auto_rules, mail_index, providers, rules
+from . import auto_rules, mail_index, providers, rules, watches
 from .log import get as _log
 from .tools import mail, mail_actions
 
@@ -386,6 +386,58 @@ def _rules_list():
 
 
 # ── черновики ───────────────────────────────────────────────────────
+
+# ── наблюдения за отправителями ─────────────────────────────────────
+
+_WATCH_WORDS = re.compile(r"след|наблюд|отслеж", re.IGNORECASE)
+
+
+@tool("watch", "Наблюдение за отправителем: action=add — следить за отправителем "
+      "письма id (каждое новое письмо от него — пуш в Telegram сразу); "
+      "list — какие наблюдения; remove — снять по номеру n или по письму id",
+      {"action": {"type": "string", "description": "add, list или remove"},
+       "id": {"type": "integer", "description": "id письма, чей отправитель"},
+       "n": {"type": "integer", "description": "номер наблюдения для remove"},
+       "account": ACCOUNT},
+      ["action"])
+def watch(conv, args):
+    action = _text(args, "action").lower()
+    if action == "list":
+        rows = watches.listing()
+        return _ok({"watches": rows or "наблюдений нет"})
+    if action not in ("add", "remove"):
+        return _err("action должен быть add, list или remove")
+    if not _WATCH_WORDS.search(conv.last_user_text or ""):
+        _log().warning(f"watch {action} ОТКЛОНЁН кодом: пользователь не просил "
+                       f"(«{(conv.last_user_text or '')[:60]}»)")
+        return _err("отказано кодом: наблюдение ставится и снимается только по "
+                    "явной просьбе пользователя («следи за…», «перестань следить»)")
+    sender = None
+    if args.get("id") is not None:
+        mid = int(args["id"])
+        card = conv.card_by_id(mid, _text(args, "account") or None)
+        if card:
+            sender = card.get("sender")
+        else:
+            acc = mail.resolve_account(_text(args, "account") or conv.default_account)
+            info = mail_index.get_by_ids(acc, [mid]).get(mid)
+            sender = info["sender"] if info else None
+        if not sender:
+            return _err("не нашёл отправителя письма с этим id — покажи письмо и повтори")
+    if action == "add":
+        if not sender:
+            return _err("нужен id письма, за чьим отправителем следить")
+        w, created = watches.add(sender, _text(args, "account") or conv.default_account or "")
+        return _ok({"watching": watches.describe(w),
+                    "note": ("новое наблюдение: скажи пользователю, за кем следишь, "
+                             "и что пуш придёт сразу, без тихих часов") if created
+                    else "такое наблюдение уже стояло"})
+    try:
+        w = watches.remove(n=args.get("n"), sender=sender)
+    except ValueError as e:
+        return _err(str(e))
+    return _ok({"removed": watches.describe(w)})
+
 
 @tool("draft", "Черновик в папке «Черновики» ящика, отправляет пользователь сам. "
       "reply_to_id — ответ на письмо с цитатой; иначе новое письмо (нужны to и subject)",
